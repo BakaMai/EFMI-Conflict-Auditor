@@ -9,11 +9,14 @@
     <RootNamespace>EfmiConflictAuditor</RootNamespace>
     <ApplicationIcon>app.ico</ApplicationIcon>
     <Version>1.0.0</Version>
-    <Title>EFMI / XXMI Cross-Mod Conflict Auditor v1.0</Title>
-    <Product>EFMI / XXMI Cross-Mod Conflict Auditor</Product>
+    <Title>EFMI Mods Conflict Auditor v1.0</Title>
+    <Product>EFMI Mods Conflict Auditor v1.0</Product>
     <Copyright>EFMI Modding Toolkit v1.0</Copyright>
     <DebugType>none</DebugType>
     <DebugSymbols>false</DebugSymbols>
     <Deterministic>true</Deterministic>
   </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="app_avatar.png" LogicalName="app_avatar.png" />
+  </ItemGroup>
 </Project>

@@ -25,7 +25,7 @@ namespace EfmiConflictAuditor
             "EFMI MOD 冲突检测工具 v1.0",
             "EFMI Mods Conflict Auditor v1.0");
 
-        public static string LangToggleText => IsZh ? "🌐 语言: 中文 (切至 EN)" : "🌐 Lang: EN (Switch to 中文)";
+        public static string LangToggleText => IsZh ? "🌐 Language: 中文" : "🌐 Language: English";
 
         // Target Bar
         public static string TargetLabel => T("扫描目录:", "Target Path:");
@@ -59,8 +59,8 @@ namespace EfmiConflictAuditor
             "Checks whether any files exist inside the ShaderFixes folder");
 
         public static string SfSafeTitle => T(
-            "🟢 ShaderFixes 状态：空 (未使用)",
-            "🟢 ShaderFixes Status: Empty (Clean)");
+            "✔ ShaderFixes 状态：空 (未使用)",
+            "✔ ShaderFixes Status: Empty (Clean)");
         public static string SfSafeSub => T(
             "文件夹内无任何文件，不会对角色 Mod 造成全局着色器干扰",
             "No files in ShaderFixes — safe from global shader overrides");
@@ -81,10 +81,10 @@ namespace EfmiConflictAuditor
             "Mods with global [ShaderOverride + overrule] classifier bundles (click to inspect)");
 
         // Conflict Detection Row 1: Mod Type Filter Cards
-        public static string TypeAllTitle => T("全部类型 (All)", "All Mod Types");
-        public static string TypeMergedTitle => T("🦴 统一骨骼 (MergedSkeleton)", "🦴 MergedSkeleton");
-        public static string TypeCrossIBTitle => T("🔗 CrossIB (跨骨骼)", "🔗 CrossIB");
-        public static string TypeSimpleTitle => T("📦 简易 MOD (Simple)", "📦 Simple Mod");
+        public static string TypeAllTitle => T("全部类型", "All Mod Types");
+        public static string TypeMergedTitle => T("🦴 统一骨骼", "🦴 MergedSkeleton");
+        public static string TypeCrossIBTitle => T("🔗 CrossIB", "🔗 CrossIB");
+        public static string TypeSimpleTitle => T("📦 简易 MOD", "📦 Simple Mod");
         public static string TypeShaderPatchTitle => T("✨ 前置插件 (FX Plugin)", "✨ FX Plugin");
 
         public static string ModTypeBadge(ModArchType type) => type switch
@@ -96,8 +96,8 @@ namespace EfmiConflictAuditor
         };
 
         // Conflict Detection Row 2: Category Filter Cards (A -> B -> C -> D)
-        public static string CardATitle => T("A. Shader Hash 冲突", "A. Shader Hash Collisions");
-        public static string CardBTitle => T("B. Regex 优先级抢占", "B. Regex Precedence Risks");
+        public static string CardATitle => T("A. ShaderOverride 冲突", "A. ShaderOverride Collisions");
+        public static string CardBTitle => T("B. ShaderRegex 冲突", "B. ShaderRegex Conflicts");
         public static string CardCTitle => T("C. 正则匹配器重复", "C. Duplicate ShaderRegex");
         public static string CardDTitle => T("D. 同角色重复开启检测", "D. Duplicate Active Character");
 

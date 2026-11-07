@@ -11,6 +11,7 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
 using Path = System.IO.Path;
 
@@ -61,29 +62,20 @@ namespace EfmiConflictAuditor
             };
         }
 
-        public static DrawingImage CreateAppIcon()
+        public static ImageSource CreateAppIcon()
         {
-            var group = new DrawingGroup();
-
-            // Outer hexagon dark shield with amber border
-            var hexGeo = Geometry.Parse("M 32,4 L 56,18 L 56,46 L 32,60 L 8,46 L 8,18 Z");
-            var shieldDrawing = new GeometryDrawing(
-                BrushFromHex("#161922"),
-                new Pen(AccentAmber, 4.0) { LineJoin = PenLineJoin.Round },
-                hexGeo);
-            group.Children.Add(shieldDrawing);
-
-            // Lightning bolt / scanner pulse in center
-            var boltGeo = Geometry.Parse("M 35,14 L 20,34 L 31,34 L 28,50 L 44,29 L 33,29 Z");
-            var boltDrawing = new GeometryDrawing(
-                AccentAmber,
-                new Pen(AccentCyan, 1.2) { LineJoin = PenLineJoin.Round },
-                boltGeo);
-            group.Children.Add(boltDrawing);
-
-            var img = new DrawingImage(group);
-            img.Freeze();
-            return img;
+            using var stream = typeof(Theme).Assembly.GetManifestResourceStream("app_avatar.png");
+            if (stream != null)
+            {
+                var bmp = new BitmapImage();
+                bmp.BeginInit();
+                bmp.CacheOption = BitmapCacheOption.OnLoad;
+                bmp.StreamSource = stream;
+                bmp.EndInit();
+                bmp.Freeze();
+                return bmp;
+            }
+            return null;
         }
 
         [DllImport("dwmapi.dll")]
@@ -311,14 +303,16 @@ namespace EfmiConflictAuditor
                 Background = Theme.AccentAmber,
                 Margin = new Thickness(0, 0, 12, 0)
             });
-            logoStack.Children.Add(new Image
+            var logoImg = new Image
             {
                 Source = Theme.CreateAppIcon(),
-                Width = 34,
-                Height = 34,
+                Width = 36,
+                Height = 36,
                 Margin = new Thickness(0, 0, 12, 0),
                 VerticalAlignment = VerticalAlignment.Center
-            });
+            };
+            RenderOptions.SetBitmapScalingMode(logoImg, BitmapScalingMode.HighQuality);
+            logoStack.Children.Add(logoImg);
 
             var titleStack = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
             _lblAppTitle = new TextBlock
@@ -601,8 +595,7 @@ namespace EfmiConflictAuditor
                 BorderThickness = new Thickness(1, 3, 1, 1),
                 CornerRadius = new CornerRadius(7),
                 Margin = new Thickness(4, 0, 4, 0),
-                Padding = new Thickness(12, 6, 12, 6),
-                Cursor = Cursors.Hand
+                Padding = new Thickness(12, 6, 12, 6)
             };
 
             var sfDock = new DockPanel();
@@ -614,8 +607,13 @@ namespace EfmiConflictAuditor
                 CornerRadius = new CornerRadius(5),
                 Padding = new Thickness(8, 3, 8, 3),
                 Margin = new Thickness(12, 0, 0, 0),
-                VerticalAlignment = VerticalAlignment.Center
+                VerticalAlignment = VerticalAlignment.Center,
+                Cursor = Cursors.Hand
             };
+            _sfOpenBadge.MouseEnter += (s, e) => _sfOpenBadge.Opacity = 0.85;
+            _sfOpenBadge.MouseLeave += (s, e) => _sfOpenBadge.Opacity = 1.0;
+            _sfOpenBadge.MouseLeftButtonUp += OnShaderFixesIndicatorClicked;
+
             _lblSfOpenBadge = new TextBlock
             {
                 FontSize = 11.5,
@@ -647,7 +645,6 @@ namespace EfmiConflictAuditor
             sfDock.Children.Add(sfTextStack);
 
             _sfIndicatorBorder.Child = sfDock;
-            _sfIndicatorBorder.MouseLeftButtonUp += OnShaderFixesIndicatorClicked;
             warningCardsGrid.Children.Add(_sfIndicatorBorder);
 
             // Warning Card 2 (Right): Global Classifier Bundle Warning (Category W)

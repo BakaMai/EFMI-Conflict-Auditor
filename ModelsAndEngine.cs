@@ -125,8 +125,8 @@ namespace EfmiConflictAuditor
         public string CategoryBadge => Category switch
         {
             "W" => I18n.T("预警 · 全局分类器", "WARN · Classifier"),
-            "A" => I18n.T("A · Shader冲突", "A · Shader Hash"),
-            "B" => I18n.T("B · 优先级抢占", "B · Precedence"),
+            "A" => I18n.T("A · ShaderOverride 冲突", "A · ShaderOverride"),
+            "B" => I18n.T("B · ShaderRegex 冲突", "B · ShaderRegex"),
             "C" => I18n.T("C · 正则匹配器重复", "C · Dup Regex"),
             "D" => I18n.T("D · 同角色重复开启", "D · Same-Char Overlap"),
             _ => Category
@@ -466,7 +466,11 @@ namespace EfmiConflictAuditor
         {
             int idx = sectionText.IndexOf('\n');
             if (idx < 0) return string.Empty;
-            return sectionText.Substring(idx + 1).Trim();
+            string[] lines = sectionText.Substring(idx + 1).Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+            var validLines = lines
+                .Select(l => l.Trim())
+                .Where(l => !string.IsNullOrEmpty(l) && !l.StartsWith(";") && !l.StartsWith("#"));
+            return string.Join("\n", validLines);
         }
 
         public static ParsedIniFile ParseIni(FileInfo file, ModIdentity modIdentity, string scanRoot)
@@ -879,8 +883,8 @@ namespace EfmiConflictAuditor
                     Id = $"A_{idCounter++}",
                     Category = "A",
                     Severity = severity,
-                    TitleZh = $"ShaderHash 冲突: {g.Key} ({mods.Count} 个 Mod)",
-                    TitleEn = $"ShaderHash Collision: {g.Key} ({mods.Count} Mods)",
+                    TitleZh = $"ShaderOverride 冲突: {g.Key} ({mods.Count} 个 Mod)",
+                    TitleEn = $"ShaderOverride Collision: {g.Key} ({mods.Count} Mods)",
                     SubtitleZh = $"涉及 Mod: {string.Join(" ↔ ", mods)}  |  filter_index: {filterDesc}",
                     SubtitleEn = $"Mods: {string.Join(" ↔ ", mods)}  |  filter_index: {filterDesc}",
                     ReasonZh = reasonZh,
