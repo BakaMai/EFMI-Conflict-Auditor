@@ -11,21 +11,20 @@
    - 仅静态解析目标目录下的 `Mods` 与 `ShaderFixes` 子文件夹，**绝不修改、重命名或写入任何用户 Mod 文件**。
    - 内置严格的子目录防误扫机制：仅当目标路径下存在 `Mods` 或 `ShaderFixes` 文件夹时才执行扫描，自动忽略 `Core`、`FrameAnalysis`、`ShaderCache` 等无关目录及各类备份文件。
 
-2. **⚠️ 独立双项风险预警面板 (Risk Warnings Panel)**
-   - **ShaderFixes 全局着色器补丁预警**：独立检测 `ShaderFixes` 目录内是否存在全局着色器替换文件（不混入 `Mods` 冲突统计），支持一键打开 `ShaderFixes` 目录排查。
-   - **全局分类器预警 (Global Classifier Warning)**：自动识别内置了全局 `[ShaderOverride + allow_duplicate_hash=overrule]` 纯分类器包的旧版 Mod，支持点击在列表中单独检视。
+2. **⚠️ 独立风险预警面板 (Risk Warnings Panel)**
+   - **ShaderFixes 全局着色器补丁预警**：独立检测 `ShaderFixes` 目录内是否存在全局着色器替换文件（不混入 `Mods` 冲突统计），支持点击右侧小按钮打开 `ShaderFixes` 目录排查。
 
-3. **🔥 5 种 Mod 架构识别 × 4 大核心冲突检测 (Conflict Detection Matrix)**
+3. **🔥 5 种 Mod 架构识别 × 4 大核心检测分类 (Conflict Detection Matrix)**
    - **Mod 架构类型自动识别与筛选**：
-     - `全部类型 (All)`
-     - `🦴 统一骨骼 (MergedSkeleton)`
-     - `🔗 CrossIB (跨骨骼)`
-     - `📦 简易 MOD (Simple)`
-     - `✨ 前置插件 (FX Plugin)`（如 `RabbitFX`、`KatFXMatcap` 等纯着色器/特效前置插件）
-   - **4 大跨 Mod 冲突分类**：
-     - **`A. Shader Hash 冲突`**：多个不同 Mod 的 `[ShaderOverride]` 声明了相同的 `hash`（细分 `filter_index` 冲突、`overrule` 覆盖等风险等级）。
-     - **`B. Regex 优先级抢占`**：旧版硬编码 `[ShaderOverride + overrule]` 分类器组与 `[ShaderRegex]` 争夺相同的 `filter_index`（如 `1718.1`、`203` 等）。
-     - **`C. 正则匹配器重复`**：多个 Mod 重复定义了相同 `filter_index` 的 `[ShaderRegex]`，或对同类着色器叠加使用了 `[ShaderRegex.*.Pattern.Replace]` 动态字节码注入（SinsOfSeven 规范高危项）。
+     - `全部类型`
+     - `🦴 统一骨骼`
+     - `🔗 CrossIB`
+     - `📦 简易 MOD`
+     - `✨ 前置插件 (FX Plugin)`（如 `RabbitFX`、`CrossIBClassifier.ini`、`KatFXMatcap` 等纯着色器/特效前置插件）
+   - **4 大检测与警告分类**：
+     - **`A. ShaderOverride 警告`**：列出所有包含 `[ShaderOverride]` 代码的角色/外观 Mod（按 Mod 汇总名单，因为任何 `[ShaderOverride]` 都会在 3DMigoto 全局 Hash 表中抢占并覆盖 `RabbitFX` 或 `CrossIBClassifier` 的 `[ShaderRegex]`，导致其它角色黑块或破皮）。
+     - **`B. ShaderRegex 警告`**：排除 `前置插件 (FX Plugin)` 外，列出所有额外私自增加 `[ShaderRegex]` 代码的角色 Mod（如私自打包分类器或内置 `[ShaderRegex.*.Pattern.Replace]` 字节码注入）。
+     - **`C. 正则匹配器重复`**：检测多个文件重复定义了相同 `filter_index` 的 `[ShaderRegex]`（含改名的 `CharacterShaderClassifier.ini` / `ShaderPassClassifier.ini` 等重复分类器），或叠加使用了 `[ShaderRegex.*.Pattern.Replace]`。
      - **`D. 同角色重复开启检测`**：检测多个**已启用**的 Mod 是否同时覆写了同一个角色的模型缓冲区 (IB/VB) 或贴图 Hash（勾选「扫描已禁用的 Mod」时自动隐藏并跳过该项）。
 
 4. **🛠️ 冲突详情与代码检查器 (Inspector & Quick Actions)**

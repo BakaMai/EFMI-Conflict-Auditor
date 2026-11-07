@@ -72,14 +72,6 @@ namespace EfmiConflictAuditor
             "全局着色器替换补丁正在使用中 , 与部分MOD存在冲突可能性",
             "Global shader files active in ShaderFixes");
 
-        // Warning Card 2: Global Classifier Bundle Warning (Category W)
-        public static string WarnClassifierTitle => T(
-            "⚠️ 全局分类器预警",
-            "⚠️ Global Classifier Warning");
-        public static string WarnClassifierSub => T(
-            "检测内置全局 [ShaderOverride + overrule] 分类器包的 Mod（点击查看详情）",
-            "Mods with global [ShaderOverride + overrule] classifier bundles (click to inspect)");
-
         // Conflict Detection Row 1: Mod Type Filter Cards
         public static string TypeAllTitle => T("全部类型", "All Mod Types");
         public static string TypeMergedTitle => T("🦴 统一骨骼", "🦴 MergedSkeleton");
@@ -96,8 +88,8 @@ namespace EfmiConflictAuditor
         };
 
         // Conflict Detection Row 2: Category Filter Cards (A -> B -> C -> D)
-        public static string CardATitle => T("A. ShaderOverride 冲突", "A. ShaderOverride Collisions");
-        public static string CardBTitle => T("B. ShaderRegex 冲突", "B. ShaderRegex Conflicts");
+        public static string CardATitle => T("A. ShaderOverride 警告", "A. ShaderOverride Warnings");
+        public static string CardBTitle => T("B. ShaderRegex 警告", "B. ShaderRegex Warnings");
         public static string CardCTitle => T("C. 正则匹配器重复", "C. Duplicate ShaderRegex");
         public static string CardDTitle => T("D. 同角色重复开启检测", "D. Duplicate Active Character");
 

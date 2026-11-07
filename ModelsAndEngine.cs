@@ -124,9 +124,8 @@ namespace EfmiConflictAuditor
 
         public string CategoryBadge => Category switch
         {
-            "W" => I18n.T("预警 · 全局分类器", "WARN · Classifier"),
-            "A" => I18n.T("A · ShaderOverride 冲突", "A · ShaderOverride"),
-            "B" => I18n.T("B · ShaderRegex 冲突", "B · ShaderRegex"),
+            "A" => I18n.T("A · ShaderOverride 警告", "A · ShaderOverride Warning"),
+            "B" => I18n.T("B · ShaderRegex 警告", "B · ShaderRegex Warning"),
             "C" => I18n.T("C · 正则匹配器重复", "C · Dup Regex"),
             "D" => I18n.T("D · 同角色重复开启", "D · Same-Char Overlap"),
             _ => Category
@@ -381,10 +380,11 @@ namespace EfmiConflictAuditor
             if (parts.Length <= 1)
             {
                 bool fileDis = parts.Length == 1 && parts[0].StartsWith("disabled", StringComparison.OrdinalIgnoreCase);
+                string rootName = parts.Length == 1 ? parts[0] : "(root)";
                 return new ModIdentity
                 {
-                    ModId = "(root)",
-                    DisplayName = "(root)",
+                    ModId = rootName,
+                    DisplayName = rootName,
                     IsDisabled = fileDis,
                     ModRootPath = scanRoot
                 };
@@ -502,6 +502,11 @@ namespace EfmiConflictAuditor
                 if (name.StartsWith("ShaderOverride", StringComparison.OrdinalIgnoreCase))
                 {
                     string hash = GetKeyValue(section, "hash")?.ToLowerInvariant();
+                    // Ignore commented-out / empty [ShaderOverride] headers that have no active hash
+                    if (string.IsNullOrEmpty(hash))
+                    {
+                        continue;
+                    }
                     string filter = GetKeyValue(section, "filter_index");
                     string allowDup = GetKeyValue(section, "allow_duplicate_hash");
 
@@ -629,6 +634,17 @@ namespace EfmiConflictAuditor
         public static ModArchType DetectModArchType(IEnumerable<ParsedIniFile> modFiles)
         {
             var fileList = modFiles.ToList();
+
+            // Standalone Shader Patch / FX Plugin (e.g. RabbitFX, KatFXMatcap, root CrossIBClassifier.ini):
+            // Contains active [ShaderRegex] or [ShaderOverride] sections, and 0 [TextureOverride] mesh/texture hooks
+            int totalTO = fileList.Sum(f => f.TextureOverrides.Count);
+            int totalSR = fileList.Sum(f => f.ShaderRegexes.Count);
+            int totalSO = fileList.Sum(f => f.ShaderOverrides.Count);
+            if (totalTO == 0 && (totalSR > 0 || totalSO > 0))
+            {
+                return ModArchType.ShaderPatch;
+            }
+
             var sb = new StringBuilder();
             foreach (var f in fileList)
             {
@@ -651,16 +667,6 @@ namespace EfmiConflictAuditor
             if (CrossIBSignatureRegex.IsMatch(activeText))
             {
                 return ModArchType.CrossIB;
-            }
-
-            // Standalone Shader Patch (e.g. RabbitFX, KatFXMatcap):
-            // Contains active [ShaderRegex] or [ShaderOverride] sections, and 0 [TextureOverride] mesh/texture hooks
-            int totalTO = fileList.Sum(f => f.TextureOverrides.Count);
-            int totalSR = fileList.Sum(f => f.ShaderRegexes.Count);
-            int totalSO = fileList.Sum(f => f.ShaderOverrides.Count);
-            if (totalTO == 0 && (totalSR > 0 || totalSO > 0))
-            {
-                return ModArchType.ShaderPatch;
             }
 
             return ModArchType.Simple;
@@ -828,17 +834,18 @@ namespace EfmiConflictAuditor
             int idCounter = 1;
 
             // =========================================================================
-            // A) Exact ShaderOverride hash collisions across different Mods
+            // A) ShaderOverride Warnings: Every Mod that contains [ShaderOverride]
             // =========================================================================
-            var hashGroups = allSO
-                .Where(x => !string.IsNullOrEmpty(x.Hash))
-                .GroupBy(x => x.Hash, StringComparer.OrdinalIgnoreCase);
+            var categoryAItems = new List<ConflictItem>();
+            var soByMod = allSO
+                .GroupBy(x => x.Mod, StringComparer.OrdinalIgnoreCase)
+                .OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase);
 
-            foreach (var g in hashGroups)
+            foreach (var g in soByMod)
             {
+                string modId = g.Key;
                 var items = g.ToList();
-                var mods = items.Select(x => x.Mod).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-                if (mods.Count < 2) continue;
+                var modType = items.First().ModType;
 
                 var filters = items
                     .Where(x => x.Filter.HasValue)
@@ -847,153 +854,144 @@ namespace EfmiConflictAuditor
                     .OrderBy(x => x)
                     .ToList();
 
-                bool hasOverrule = items.Any(x => x.Overrule);
-                bool hasCommands = items.Any(x => !x.PureClassifier);
+                var hashes = items
+                    .Where(x => !string.IsNullOrEmpty(x.Hash))
+                    .Select(x => x.Hash)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
 
-                string severity = "MEDIUM";
-                string reasonZh = "多个不同的 Mod 声明了相同 Hash 的 [ShaderOverride] 节。";
-                string reasonEn = "The same ShaderOverride hash is declared by multiple different Mods.";
+                string hashPreview = hashes.Count == 0
+                    ? "-"
+                    : (hashes.Count <= 4
+                        ? string.Join(", ", hashes)
+                        : $"{string.Join(", ", hashes.Take(4))} ... (+{hashes.Count - 4})");
 
-                if (filters.Count > 1)
-                {
-                    severity = "CRITICAL";
-                    string fStr = string.Join(" vs ", filters.Select(f => f.ToString(CultureInfo.InvariantCulture)));
-                    reasonZh = $"同一个着色器 Hash ({g.Key}) 在不同 Mod 中被赋予了冲突的 filter_index 值 ({fStr})！会导致其中一个 Mod 的着色器过滤条件完全失效。";
-                    reasonEn = $"The same shader hash ({g.Key}) receives DIFFERENT filter_index values ({fStr}) across Mods! One Mod's shader filter condition will break.";
-                }
-                else if (hasOverrule && hasCommands)
-                {
-                    severity = "HIGH";
-                    reasonZh = $"多个 Mod 共用着色器 Hash ({g.Key})，其中包含 allow_duplicate_hash=overrule 强行覆盖以及自定义渲染指令，极易互相覆盖导致材质/阴影异常。";
-                    reasonEn = $"Multiple Mods share shader hash ({g.Key}) with allow_duplicate_hash=overrule and active commands/actions, risking mutual override.";
-                }
-                else if (hasOverrule)
-                {
-                    severity = "HIGH";
-                    reasonZh = $"多个 Mod 对同一着色器 Hash ({g.Key}) 声明了 allow_duplicate_hash=overrule 纯分类器（常见于旧版 CrossIB 硬编码 Hash 分类器包）。";
-                    reasonEn = $"Multiple Mods declare allow_duplicate_hash=overrule on the same shader hash ({g.Key}) (typical of legacy CrossIB hardcoded hash classifiers).";
-                }
-
-                string filterDesc = filters.Count > 0
+                string filterDescZh = filters.Count > 0
                     ? string.Join(", ", filters.Select(f => f.ToString(CultureInfo.InvariantCulture)))
-                    : "-";
+                    : "未设置 (指令/状态覆盖)";
+                string filterDescEn = filters.Count > 0
+                    ? string.Join(", ", filters.Select(f => f.ToString(CultureInfo.InvariantCulture)))
+                    : "None (Command/State Override)";
+
+                bool hasFilter = filters.Count > 0;
+                // Standard CrossIB pass classifier: Mod is CrossIB architecture and all filter_index values are in 200..205
+                bool isStandardCrossIB = modType == ModArchType.CrossIB &&
+                                         hasFilter &&
+                                         filters.All(f => f >= 200.0 && f <= 205.0);
+
+                string severity = (hasFilter && !isStandardCrossIB) ? "HIGH" : "WARNING";
+
+                string reasonZh;
+                string reasonEn;
+                if (isStandardCrossIB)
+                {
+                    reasonZh = $"CrossIB 架构 Mod「{modId}」包含 {items.Count} 个用于跨骨骼阶段识别的 [ShaderOverride] 节（filter_index: {filterDescZh}）。这是旧版 CrossIB 正常运行所需的顶点着色器标记，通常不会影响 RabbitFX，仅在跨版本 Shader Hash 变动或与其他特殊 Mod 撞 Hash 时可能产生冲突。";
+                    reasonEn = $"CrossIB Mod '{modId}' contains {items.Count} [ShaderOverride] section(s) for cross-skeleton pass detection (filter_index: {filterDescEn}). These vertex shader markers are required for legacy CrossIB to function and normally do not affect RabbitFX, only risking conflicts if shader hashes change across game updates or collide with custom Mods.";
+                }
+                else if (hasFilter)
+                {
+                    reasonZh = $"Mod「{modId}」包含 {items.Count} 个自定义 [ShaderOverride] 节（filter_index: {filterDescZh}）。该设置在全局优先生效，极易覆盖并废除 RabbitFX (1718.1 / 1718.2) 等公共插件的动态正则标签，导致同屏其他角色浑身变黑或贴图错乱！";
+                    reasonEn = $"Mod '{modId}' contains {items.Count} custom [ShaderOverride] section(s) (filter_index: {filterDescEn}). Since [ShaderOverride] takes global priority over [ShaderRegex], it can overwrite shared FX plugins like RabbitFX (1718.1 / 1718.2), causing other characters to turn black or have broken textures!";
+                }
+                else
+                {
+                    reasonZh = $"Mod「{modId}」包含 {items.Count} 个未设置 filter_index 的 [ShaderOverride] 节（涉及 Hash: {hashPreview}）。[ShaderOverride] 对全游戏所有使用该着色器 Hash 的物体全局生效，若包含 handling = skip 或全局指令覆盖，可能会影响其他角色或全局渲染。";
+                    reasonEn = $"Mod '{modId}' contains {items.Count} [ShaderOverride] section(s) without filter_index (hashes: {hashPreview}). [ShaderOverride] applies globally to all objects using this shader hash; global commands or handling = skip may affect other characters or global rendering.";
+                }
+
+                string recommendZh;
+                string recommendEn;
+                if (isStandardCrossIB)
+                {
+                    recommendZh = "请先确认 EFMI\\Mods 目录下是否已放置 CrossIBClassifier.ini；若游戏内仍出现画面异常，请停用该 Mod（在文件夹名前加上 DISABLED_ 前缀）。";
+                    recommendEn = "First verify whether CrossIBClassifier.ini is placed in the EFMI\\Mods directory; if visual glitches still occur in-game, please disable this Mod (add the DISABLED_ prefix to its folder).";
+                }
+                else if (hasFilter)
+                {
+                    recommendZh = "若游戏内出现画面异常（如角色变黑、贴图错乱或组件消失），请直接停用该 Mod（在文件夹名前加上 DISABLED_ 前缀）。";
+                    recommendEn = "If visual glitches occur in-game (such as black models, broken textures, or missing parts), please disable this Mod (add the DISABLED_ prefix to its folder).";
+                }
+                else
+                {
+                    recommendZh = "若游戏内出现画面异常，请直接停用该 Mod（在文件夹名前加上 DISABLED_ 前缀）。";
+                    recommendEn = "If visual glitches occur in-game, please disable this Mod (add the DISABLED_ prefix to its folder).";
+                }
 
                 var ci = new ConflictItem
                 {
                     Id = $"A_{idCounter++}",
                     Category = "A",
                     Severity = severity,
-                    TitleZh = $"ShaderOverride 冲突: {g.Key} ({mods.Count} 个 Mod)",
-                    TitleEn = $"ShaderOverride Collision: {g.Key} ({mods.Count} Mods)",
-                    SubtitleZh = $"涉及 Mod: {string.Join(" ↔ ", mods)}  |  filter_index: {filterDesc}",
-                    SubtitleEn = $"Mods: {string.Join(" ↔ ", mods)}  |  filter_index: {filterDesc}",
+                    TitleZh = $"ShaderOverride 警告: {modId} ({items.Count} 个节)",
+                    TitleEn = $"ShaderOverride Warning: {modId} ({items.Count} section(s))",
+                    SubtitleZh = $"filter_index: [{filterDescZh}]  |  Shader Hash: {hashPreview}",
+                    SubtitleEn = $"filter_index: [{filterDescEn}]  |  Shader Hash: {hashPreview}",
                     ReasonZh = reasonZh,
                     ReasonEn = reasonEn,
-                    RecommendZh = "建议点击下方「📝 打开 INI」检查涉及的文件行号，确认两个 Mod 是否修改了同一个全局 Shader，或将其中一个冲突 Mod 加上 DISABLED_ 前缀禁用。",
-                    RecommendEn = "Inspect the involved INI files and lines below, or disable one of the conflicting Mods with a DISABLED_ prefix.",
+                    RecommendZh = recommendZh,
+                    RecommendEn = recommendEn,
                     Sections = items
                 };
                 PopulateModMetadata(ci, items);
+                categoryAItems.Add(ci);
+            }
+
+            // Sort Category A so HIGH items appear at the top, followed by WARNING items
+            foreach (var ci in categoryAItems.OrderByDescending(x => x.Severity == "HIGH"))
+            {
                 result.AllFindings.Add(ci);
             }
 
             // =========================================================================
-            // B) Global pure ShaderOverride classifier bundles vs ShaderRegex providers
+            // B) ShaderRegex Warnings: Every Mod (excluding FX Plugin / ShaderPatch)
+            //    that contains [ShaderRegex] sections
             // =========================================================================
-            var allMods = result.ParsedFiles.Select(p => p.ModId).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-            var modClassifiers = new Dictionary<string, List<IniSectionItem>>(StringComparer.OrdinalIgnoreCase);
-            var modRegexByFilter = new Dictionary<string, List<IniSectionItem>>(StringComparer.OrdinalIgnoreCase);
+            var srByMod = allSR
+                .Where(x => x.ModType != ModArchType.ShaderPatch)
+                .GroupBy(x => x.Mod, StringComparer.OrdinalIgnoreCase)
+                .OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase);
 
-            foreach (string mod in allMods)
+            foreach (var g in srByMod)
             {
-                modClassifiers[mod] = allSO
-                    .Where(x => x.Mod.Equals(mod, StringComparison.OrdinalIgnoreCase) &&
-                                !string.IsNullOrEmpty(x.Hash) &&
-                                x.Filter.HasValue &&
-                                x.Overrule &&
-                                x.PureClassifier)
+                string modId = g.Key;
+                var items = g.ToList();
+
+                var filters = items
+                    .Where(x => x.Filter.HasValue)
+                    .Select(x => x.Filter.Value)
+                    .Distinct()
+                    .OrderBy(x => x)
                     .ToList();
 
-                modRegexByFilter[mod] = allSR
-                    .Where(x => x.Mod.Equals(mod, StringComparison.OrdinalIgnoreCase) && x.Filter.HasValue)
-                    .ToList();
-            }
+                bool hasReplace = items.Any(x => x.HasPatternReplace);
+                var secNames = items.Select(x => x.Name).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                string secPreview = secNames.Count <= 3
+                    ? string.Join(", ", secNames)
+                    : $"{string.Join(", ", secNames.Take(3))} ... (+{secNames.Count - 3})";
 
-            foreach (string classifierMod in allMods)
-            {
-                var classifiers = modClassifiers[classifierMod];
-                if (classifiers.Count < 3) continue;
+                string filterDesc = filters.Count > 0
+                    ? string.Join(", ", filters.Select(f => f.ToString(CultureInfo.InvariantCulture)))
+                    : "-";
 
-                var classifierFilters = classifiers.Select(x => x.Filter.Value).Distinct().ToList();
+                string severity = (hasReplace || filters.Count > 0) ? "HIGH" : "WARNING";
 
-                foreach (string regexMod in allMods)
+                var ci = new ConflictItem
                 {
-                    if (regexMod.Equals(classifierMod, StringComparison.OrdinalIgnoreCase)) continue;
-
-                    var regexSections = modRegexByFilter[regexMod];
-                    if (regexSections.Count == 0) continue;
-
-                    var regexFilters = regexSections.Select(x => x.Filter.Value).Distinct().ToList();
-                    var overlap = classifierFilters.Where(f => regexFilters.Contains(f)).Distinct().OrderBy(f => f).ToList();
-                    if (overlap.Count < 2) continue;
-
-                    var candidateSections = classifiers.Where(c => overlap.Contains(c.Filter.Value)).ToList();
-                    if (candidateSections.Count < 3) continue;
-
-                    var matchedRegexSections = regexSections.Where(r => overlap.Contains(r.Filter.Value)).ToList();
-                    var allInvolvedSections = candidateSections.Concat(matchedRegexSections).ToList();
-
-                    string overlapStr = string.Join(", ", overlap.Select(f => f.ToString(CultureInfo.InvariantCulture)));
-
-                    var ci = new ConflictItem
-                    {
-                        Id = $"B_{idCounter++}",
-                        Category = "B",
-                        Severity = "HIGH",
-                        TitleZh = $"{classifierMod}  ↔  {regexMod}",
-                        TitleEn = $"{classifierMod}  ↔  {regexMod}",
-                        SubtitleZh = $"重叠 filter_index: [{overlapStr}]  |  涉及分类器节: {candidateSections.Count} 个",
-                        SubtitleEn = $"Overlap filter_index: [{overlapStr}]  |  Classifier sections: {candidateSections.Count}",
-                        ReasonZh = $"Mod「{classifierMod}」包含 {candidateSections.Count} 个带 allow_duplicate_hash=overrule 的全局纯 [ShaderOverride] 分类器，其 filter_index ({overlapStr}) 与「{regexMod}」提供的 [ShaderRegex] 重叠。在 3DMigoto 中 ShaderOverride 优先级高于 ShaderRegex，会抢占或干扰 Regex 分类。",
-                        ReasonEn = $"Mod '{classifierMod}' declares {candidateSections.Count} pure global [ShaderOverride] classifiers with allow_duplicate_hash=overrule whose filter_index ({overlapStr}) overlaps with [ShaderRegex] in '{regexMod}'. Since ShaderOverride takes precedence over ShaderRegex, hardcoded classifiers can preempt Regex classification.",
-                        RecommendZh = "建议避免同时启用这两个冲突 Mod，或将旧版硬编码 ShaderOverride 分类器 Mod 升级为统一骨骼 (MergedSkeleton)。",
-                        RecommendEn = "Avoid enabling both conflicting Mods simultaneously, or upgrade the legacy hardcoded ShaderOverride Mod to MergedSkeleton.",
-                        Sections = allInvolvedSections
-                    };
-                    PopulateModMetadata(ci, allInvolvedSections);
-                    result.AllFindings.Add(ci);
-                }
-            }
-
-            // =========================================================================
-            // W) Standalone risky global classifier bundles (风险预警)
-            // =========================================================================
-            foreach (string mod in allMods)
-            {
-                var classifiers = modClassifiers[mod];
-                if (classifiers.Count >= 5)
-                {
-                    var filters = classifiers.Select(x => x.Filter.Value).Distinct().OrderBy(x => x).ToList();
-                    string filterStr = string.Join(", ", filters.Select(f => f.ToString(CultureInfo.InvariantCulture)));
-
-                    var ci = new ConflictItem
-                    {
-                        Id = $"W_{idCounter++}",
-                        Category = "W",
-                        Severity = "WARNING",
-                        TitleZh = $"全局纯分类器包预警: {mod} ({classifiers.Count} 个节)",
-                        TitleEn = $"Global Pure Classifier Bundle: {mod} ({classifiers.Count} sections)",
-                        SubtitleZh = $"包含 {classifiers.Count} 个 ShaderOverride + overrule 分类器  |  filter_index: [{filterStr}]",
-                        SubtitleEn = $"{classifiers.Count} ShaderOverride + overrule classifiers  |  filter_index: [{filterStr}]",
-                        ReasonZh = $"Mod「{mod}」内置了 {classifiers.Count} 个全局生效的 [ShaderOverride] + allow_duplicate_hash=overrule 纯分类器（filter_index: {filterStr}）。单开此 Mod 时不一定报错，但它是全局硬编码接管，一旦与使用 ShaderRegex 的 Mod 同开就会引发 B 类优先级冲突。",
-                        ReasonEn = $"Mod '{mod}' contains {classifiers.Count} globally active [ShaderOverride] + allow_duplicate_hash=overrule pure classifiers (filter_index: {filterStr}). Not an immediate bug alone, but can conflict with Regex-based Mods.",
-                        RecommendZh = "单用此 Mod 时通常正常；若后续与使用 ShaderRegex 的 Mod 同开出现异常，可定位到下方 INI 文件排查。",
-                        RecommendEn = "Usually fine when used standalone; inspect the INI files below if conflicts arise when paired with Regex-based Mods.",
-                        Sections = classifiers
-                    };
-                    PopulateModMetadata(ci, classifiers);
-                    result.AllFindings.Add(ci);
-                }
+                    Id = $"B_{idCounter++}",
+                    Category = "B",
+                    Severity = severity,
+                    TitleZh = $"ShaderRegex 警告: {modId} ({items.Count} 个节)",
+                    TitleEn = $"ShaderRegex Warning: {modId} ({items.Count} section(s))",
+                    SubtitleZh = $"包含节: {secPreview}  |  filter_index: [{filterDesc}]  |  含 Pattern.Replace: {(hasReplace ? "是" : "否")}",
+                    SubtitleEn = $"Sections: {secPreview}  |  filter_index: [{filterDesc}]  |  Has Pattern.Replace: {(hasReplace ? "Yes" : "No")}",
+                    ReasonZh = $"非前置插件 Mod「{modId}」包含 {items.Count} 个 [ShaderRegex] 正则匹配节。易与公共前置插件（如 RabbitFX / CrossIBClassifier）发生冲突。",
+                    ReasonEn = $"Non-FX-Plugin Mod '{modId}' contains {items.Count} [ShaderRegex] section(s). May conflict with shared FX plugins (such as RabbitFX / CrossIBClassifier).",
+                    RecommendZh = "若游戏内出现画面异常，请直接停用该 Mod（在文件夹名前加上 DISABLED_ 前缀）。",
+                    RecommendEn = "If visual glitches occur in-game, please disable this Mod (add the DISABLED_ prefix to its folder).",
+                    Sections = items
+                };
+                PopulateModMetadata(ci, items);
+                result.AllFindings.Add(ci);
             }
 
             // =========================================================================
@@ -1020,10 +1018,10 @@ namespace EfmiConflictAuditor
                     TitleEn = $"Duplicate ShaderRegex (filter_index = {fVal})",
                     SubtitleZh = $"涉及 Mod ({mods.Count}): {string.Join(" ↔ ", mods)}",
                     SubtitleEn = $"Involved Mods ({mods.Count}): {string.Join(" ↔ ", mods)}",
-                    ReasonZh = $"多个不同的 Mod 同时定义了分配相同 filter_index ({fVal}) 的 [ShaderRegex]！这通常意味着某个角色 Mod 私自内置了一份旧版 RabbitFX 或全局分类器副本，与公共组件或其他 Mod 发生重复匹配，会导致着色器分类覆盖、掉帧或渲染异常。",
-                    ReasonEn = $"Multiple Mods define [ShaderRegex] assigning the same filter_index ({fVal})! Usually caused by a character Mod bundling its own private copy of RabbitFX or global regex classifiers, causing redundant regex evaluation, classification override, or FPS drops.",
-                    RecommendZh = "建议保留唯一的公共 ShaderRegex 提供者（如 others/RabbitFX -ENDMI-），将角色 Mod 内部重复夹带的冗余 ShaderRegex 节删除或禁用。",
-                    RecommendEn = "Keep a single shared ShaderRegex provider (such as others/RabbitFX -ENDMI-) and remove/disable duplicate bundled ShaderRegex sections inside individual character Mods.",
+                    ReasonZh = $"多个不同的 Mod 同时定义了分配相同 filter_index ({fVal}) 的 [ShaderRegex]！这通常意味着某个角色 Mod 私自内置了一份全局分类器副本，与公共组件或其他 Mod 发生重复匹配，会导致着色器分类覆盖、掉帧或渲染异常。",
+                    ReasonEn = $"Multiple Mods define [ShaderRegex] assigning the same filter_index ({fVal})! Usually caused by a character Mod bundling its own private copy of global regex classifiers, causing redundant regex evaluation, classification override, or FPS drops.",
+                    RecommendZh = "建议保留唯一的公共 ShaderRegex 提供者（如 RabbitFX），将角色 Mod 内部重复夹带的冗余 ShaderRegex 节删除或禁用。",
+                    RecommendEn = "Keep a single shared ShaderRegex provider (such as RabbitFX) and remove/disable duplicate bundled ShaderRegex sections inside individual character Mods.",
                     Sections = items
                 };
                 PopulateModMetadata(ci, items);
@@ -1065,10 +1063,10 @@ namespace EfmiConflictAuditor
                     SubtitleZh = $"涉及 Mod ({mods.Count}): {string.Join(" ↔ ", mods)}  |  含 Pattern.Replace: {(hasReplace ? "是 (高危)" : "否")}",
                     SubtitleEn = $"Mods ({mods.Count}): {string.Join(" ↔ ", mods)}  |  Has Pattern.Replace: {(hasReplace ? "Yes (High Risk)" : "No")}",
                     ReasonZh = hasReplace
-                        ? $"多个 Mod 对相同的着色器结构使用了 [ShaderRegex.*.Pattern.Replace] 动态字节码注入（如独立 CutoutMask / 透明遮罩正则）。根据 SinsOfSeven 规范，多个 Mod 同时对同一类 Shader 执行 Regex 字节码修补会导致自重匹配、多命名空间指令堆叠、严重掉帧甚至游戏崩溃！"
+                        ? $"多个 Mod 对相同的着色器结构使用了 [ShaderRegex.*.Pattern.Replace] 动态字节码注入（如独立 CutoutMask / 透明遮罩正则）。根据 AGMF社区规范，多个 Mod 同时对同一类 Shader 执行 Regex 字节码修补会导致自重匹配、多命名空间指令堆叠、严重掉帧甚至游戏崩溃！"
                         : $"多个 Mod 各自内置了完全相同的 [ShaderRegex] 正则匹配模式（如 CrossIBClassifier.ini）。虽然各自写入私有命名空间变量，但多份相同正则在加载着色器时会产生重复匹配开销。",
                     ReasonEn = hasReplace
-                        ? $"Multiple Mods apply [ShaderRegex.*.Pattern.Replace] ASM bytecode patching to the same shader pattern (e.g. standalone CutoutMask). Per SinsOfSeven standard, multi-Mod ShaderRegex bytecode replacement causes self-rematching, multi-namespace instruction stacking, severe stutter, or crashes!"
+                        ? $"Multiple Mods apply [ShaderRegex.*.Pattern.Replace] ASM bytecode patching to the same shader pattern (e.g. standalone CutoutMask). Per AGMF community standard, multi-Mod ShaderRegex bytecode replacement causes self-rematching, multi-namespace instruction stacking, severe stutter, or crashes!"
                         : $"Multiple Mods bundle identical [ShaderRegex] patterns (e.g. CrossIBClassifier.ini). Even with private namespaces, duplicate regex definitions add redundant shader compilation/matching overhead.",
                     RecommendZh = hasReplace
                         ? "强烈建议将 [ShaderRegex.*.Pattern.Replace] 迁移为按具体 Shader Hash 绑定的 [CustomShader] 或统一交由单个共享组件处理，避免多个角色 Mod 叠加注入。"
@@ -1082,7 +1080,7 @@ namespace EfmiConflictAuditor
                 result.AllFindings.Add(ci);
             }
 
-            // C3: Multiple Mods using [ShaderRegex.*.Pattern.Replace] on the same shader_model (SinsOfSeven ASM stacking risk)
+            // C3: Multiple Mods using [ShaderRegex.*.Pattern.Replace] on the same shader_model (AGMF community standard ASM stacking risk)
             var replaceByModelGroups = allSR
                 .Where(x => x.HasPatternReplace)
                 .GroupBy(x => (x.ShaderModel ?? "unknown").ToLowerInvariant());
@@ -1109,8 +1107,8 @@ namespace EfmiConflictAuditor
                     TitleEn = $"Duplicate ShaderRegex.Pattern.Replace Bytecode Stacking ({g.Key})",
                     SubtitleZh = $"涉及 Mod ({mods.Count}): {string.Join(" ↔ ", mods)}  |  共 {items.Count} 个字节码修补节",
                     SubtitleEn = $"Involved Mods ({mods.Count}): {string.Join(" ↔ ", mods)}  |  {items.Count} bytecode replace sections",
-                    ReasonZh = $"检测到 {mods.Count} 个不同 Mod 同时对 {g.Key} 着色器使用了 [ShaderRegex.*.Pattern.Replace] 动态字节码替换（例如各自的 CutoutMask.ini 透明遮罩正则）。根据 SinsOfSeven 规范，多个 Mod 同时对同类着色器进行 Regex 字节码注入会导致自重匹配、多命名空间指令堆叠、性能下降甚至崩溃。",
-                    ReasonEn = $"Detected {mods.Count} different Mods applying [ShaderRegex.*.Pattern.Replace] bytecode patching to {g.Key} shaders (e.g. standalone CutoutMask.ini). Per SinsOfSeven standard, multi-Mod regex bytecode replacement causes self-rematching, multi-namespace ASM stacking, performance loss, or crashes.",
+                    ReasonZh = $"检测到 {mods.Count} 个不同 Mod 同时对 {g.Key} 着色器使用了 [ShaderRegex.*.Pattern.Replace] 动态字节码替换（例如各自的 CutoutMask.ini 透明遮罩正则）。根据 AGMF社区规范，多个 Mod 同时对同类着色器进行 Regex 字节码注入会导致自重匹配、多命名空间指令堆叠、性能下降甚至崩溃。",
+                    ReasonEn = $"Detected {mods.Count} different Mods applying [ShaderRegex.*.Pattern.Replace] bytecode patching to {g.Key} shaders (e.g. standalone CutoutMask.ini). Per AGMF community standard, multi-Mod regex bytecode replacement causes self-rematching, multi-namespace ASM stacking, performance loss, or crashes.",
                     RecommendZh = "建议避免同时开启多个自带独立 CutoutMask.ini (ShaderRegex.Pattern.Replace) 的角色 Mod，或将其改造为基于 [CustomShader] 的定向材质路由。",
                     RecommendEn = "Avoid enabling multiple Mods with standalone CutoutMask.ini (ShaderRegex.Pattern.Replace) simultaneously, or convert them to targeted [CustomShader] sections.",
                     Sections = items
@@ -1197,16 +1195,15 @@ namespace EfmiConflictAuditor
             sb.AppendLine();
 
             string[] cats = audit.IncludedDisabled
-                ? new[] { "W", "A", "B", "C" }
-                : new[] { "W", "A", "B", "C", "D" };
+                ? new[] { "A", "B", "C" }
+                : new[] { "A", "B", "C", "D" };
 
             foreach (string cat in cats)
             {
                 string header = cat switch
                 {
-                    "W" => zh ? "=== ⚠️ 风险预警: 独立全局分类器包预警 ===" : "=== ⚠️ Risk Warning: Standalone Global Classifier Bundles ===",
-                    "A" => zh ? "=== A. ShaderOverride 精确 Hash 跨 Mod 冲突 ===" : "=== A. Exact ShaderOverride Hash Collisions ===",
-                    "B" => zh ? "=== B. ShaderOverride 分类器包 vs ShaderRegex 优先级抢占风险 ===" : "=== B. ShaderOverride Classifier Bundle vs ShaderRegex Precedence Risks ===",
+                    "A" => zh ? "=== A. ShaderOverride 警告 (含 ShaderOverride 的 Mod 名单) ===" : "=== A. ShaderOverride Warnings (Mods containing ShaderOverride) ===",
+                    "B" => zh ? "=== B. ShaderRegex 警告 (非前置插件含 ShaderRegex 的 Mod 名单) ===" : "=== B. ShaderRegex Warnings (Non-FX-Plugin Mods containing ShaderRegex) ===",
                     "C" => zh ? "=== C. 正则匹配器重复 (ShaderRegex 冲突) ===" : "=== C. Duplicate ShaderRegex Conflicts ===",
                     "D" => zh ? "=== D. 同角色重复开启检测 (TextureOverride Hash 重叠) ===" : "=== D. Same-Character Multi-Mod Check (TextureOverride Overlaps) ===",
                     _ => cat

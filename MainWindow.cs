@@ -206,18 +206,12 @@ namespace EfmiConflictAuditor
         private TextBlock _lblWarningSectionHeader;
         private TextBlock _lblConflictSectionHeader;
 
-        // Warning Card 1: ShaderFixes Status Indicator
+        // Warning Card: ShaderFixes Status Indicator
         private Border _sfIndicatorBorder;
         private TextBlock _lblSfTitle;
         private TextBlock _lblSfSub;
         private Border _sfOpenBadge;
         private TextBlock _lblSfOpenBadge;
-
-        // Warning Card 2: Global Classifier Bundle Warning (Category W)
-        private Border _warnClassifierBorder;
-        private TextBlock _lblWarnClassifierTitle;
-        private TextBlock _lblWarnClassifierSub;
-        private TextBlock _lblWarnClassifierCount;
 
         // Conflict Detection Row 1: 5 Mod Type Cards
         private readonly Dictionary<string, (Border border, TextBlock title, TextBlock count)> _modTypeCards =
@@ -580,21 +574,14 @@ namespace EfmiConflictAuditor
             warningHeaderBorder.Child = _lblWarningSectionHeader;
             warningPanelStack.Children.Add(warningHeaderBorder);
 
-            var warningCardsGrid = new UniformGrid
-            {
-                Rows = 1,
-                Columns = 2,
-                Margin = new Thickness(6, 6, 6, 6)
-            };
-
-            // Warning Card 1 (Left): ShaderFixes Status Indicator
+            // Warning Card: ShaderFixes Status Indicator (full width)
             _sfIndicatorBorder = new Border
             {
                 Background = Theme.BgCard,
                 BorderBrush = Theme.BorderSubtle,
                 BorderThickness = new Thickness(1, 3, 1, 1),
                 CornerRadius = new CornerRadius(7),
-                Margin = new Thickness(4, 0, 4, 0),
+                Margin = new Thickness(10, 6, 10, 6),
                 Padding = new Thickness(12, 6, 12, 6)
             };
 
@@ -645,73 +632,7 @@ namespace EfmiConflictAuditor
             sfDock.Children.Add(sfTextStack);
 
             _sfIndicatorBorder.Child = sfDock;
-            warningCardsGrid.Children.Add(_sfIndicatorBorder);
-
-            // Warning Card 2 (Right): Global Classifier Bundle Warning (Category W)
-            _warnClassifierBorder = new Border
-            {
-                Background = Theme.BgCard,
-                BorderBrush = Theme.BorderSubtle,
-                BorderThickness = new Thickness(1, 3, 1, 1),
-                CornerRadius = new CornerRadius(7),
-                Margin = new Thickness(4, 0, 4, 0),
-                Padding = new Thickness(12, 6, 12, 6),
-                Cursor = Cursors.Hand
-            };
-
-            var wcDock = new DockPanel();
-            _lblWarnClassifierCount = new TextBlock
-            {
-                Text = "0",
-                FontSize = 20,
-                FontWeight = FontWeights.Bold,
-                Foreground = Theme.BrushFromHex("#FAAD14"),
-                VerticalAlignment = VerticalAlignment.Center,
-                HorizontalAlignment = HorizontalAlignment.Right,
-                Margin = new Thickness(12, 0, 0, 0)
-            };
-            DockPanel.SetDock(_lblWarnClassifierCount, Dock.Right);
-            wcDock.Children.Add(_lblWarnClassifierCount);
-
-            var wcTextStack = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
-            _lblWarnClassifierTitle = new TextBlock
-            {
-                FontSize = 13,
-                FontWeight = FontWeights.Bold,
-                Foreground = Theme.TextPrimary,
-                TextTrimming = TextTrimming.CharacterEllipsis
-            };
-            _lblWarnClassifierSub = new TextBlock
-            {
-                FontSize = 11.5,
-                Foreground = Theme.TextSecondary,
-                Margin = new Thickness(0, 1, 0, 0),
-                TextTrimming = TextTrimming.CharacterEllipsis
-            };
-            wcTextStack.Children.Add(_lblWarnClassifierTitle);
-            wcTextStack.Children.Add(_lblWarnClassifierSub);
-            wcDock.Children.Add(wcTextStack);
-
-            _warnClassifierBorder.Child = wcDock;
-            _warnClassifierBorder.MouseLeftButtonUp += (s, e) =>
-            {
-                _activeCategoryFilter = (_activeCategoryFilter == "W") ? "ALL" : "W";
-                _renderLimit = 100;
-                UpdateCardFilterHighlights();
-                RebuildConflictListUI();
-                if (_filteredConflicts.Count > 0 && !_filteredConflicts.Contains(_selectedConflict))
-                {
-                    SelectConflictItem(_filteredConflicts[0]);
-                }
-                else if (_filteredConflicts.Count == 0)
-                {
-                    _selectedConflict = null;
-                    RebuildDetailInspectorUI();
-                }
-            };
-            warningCardsGrid.Children.Add(_warnClassifierBorder);
-
-            warningPanelStack.Children.Add(warningCardsGrid);
+            warningPanelStack.Children.Add(_sfIndicatorBorder);
             warningPanelBorder.Child = warningPanelStack;
             filterMatrixStack.Children.Add(warningPanelBorder);
 
@@ -1121,8 +1042,6 @@ namespace EfmiConflictAuditor
 
             _lblWarningSectionHeader.Text = I18n.WarningSectionHeader;
             _lblConflictSectionHeader.Text = I18n.ConflictSectionHeader;
-            _lblWarnClassifierTitle.Text = I18n.WarnClassifierTitle;
-            _lblWarnClassifierSub.Text = I18n.WarnClassifierSub;
 
             if (_modTypeCards.ContainsKey("ALL")) _modTypeCards["ALL"].title.Text = I18n.TypeAllTitle;
             if (_modTypeCards.ContainsKey("MergedSkeleton")) _modTypeCards["MergedSkeleton"].title.Text = I18n.TypeMergedTitle;
@@ -1229,24 +1148,17 @@ namespace EfmiConflictAuditor
                 return;
             }
 
-            // Warning Card 2: Global Classifier Warning (Category W)
-            int warnClassifierCount = _currentAudit.AllFindings.Count(x => x.Category == "W");
-            _lblWarnClassifierCount.Text = warnClassifierCount.ToString();
-            _lblWarnClassifierCount.Foreground = warnClassifierCount > 0
-                ? Theme.BrushFromHex("#FAAD14")
-                : Theme.AccentGreen;
+            // Conflict Detection Row 1: Mod Type counts across all findings (A/B/C/D)
+            var allItems = _currentAudit.AllFindings;
 
-            // Conflict Detection Row 1: Mod Type conflict counts (strictly true conflicts A/B/C/D, excluding W)
-            var trueConflicts = _currentAudit.AllFindings.Where(x => x.Category != "W").ToList();
-
-            _modTypeCards["ALL"].count.Text = trueConflicts.Count.ToString();
-            _modTypeCards["MergedSkeleton"].count.Text = trueConflicts.Count(x => x.InvolvedModTypes.Contains(ModArchType.MergedSkeleton)).ToString();
-            _modTypeCards["CrossIB"].count.Text = trueConflicts.Count(x => x.InvolvedModTypes.Contains(ModArchType.CrossIB)).ToString();
-            _modTypeCards["Simple"].count.Text = trueConflicts.Count(x => x.InvolvedModTypes.Contains(ModArchType.Simple)).ToString();
-            _modTypeCards["ShaderPatch"].count.Text = trueConflicts.Count(x => x.InvolvedModTypes.Contains(ModArchType.ShaderPatch)).ToString();
+            _modTypeCards["ALL"].count.Text = allItems.Count.ToString();
+            _modTypeCards["MergedSkeleton"].count.Text = allItems.Count(x => x.InvolvedModTypes.Contains(ModArchType.MergedSkeleton)).ToString();
+            _modTypeCards["CrossIB"].count.Text = allItems.Count(x => x.InvolvedModTypes.Contains(ModArchType.CrossIB)).ToString();
+            _modTypeCards["Simple"].count.Text = allItems.Count(x => x.InvolvedModTypes.Contains(ModArchType.Simple)).ToString();
+            _modTypeCards["ShaderPatch"].count.Text = allItems.Count(x => x.InvolvedModTypes.Contains(ModArchType.ShaderPatch)).ToString();
 
             // Conflict Detection Row 2: Category counts (A/B/C/D) filtered by active Mod Type
-            var typeFiltered = trueConflicts
+            var typeFiltered = allItems
                 .Where(x => MatchesModTypeFilter(x, _activeModTypeFilter))
                 .ToList();
 
@@ -1258,14 +1170,6 @@ namespace EfmiConflictAuditor
 
         private void UpdateCardFilterHighlights()
         {
-            bool isWarnSelected = _activeCategoryFilter == "W";
-
-            if (_warnClassifierBorder != null)
-            {
-                _warnClassifierBorder.BorderBrush = isWarnSelected ? Theme.BrushFromHex("#FAAD14") : Theme.BorderSubtle;
-                _warnClassifierBorder.Background = isWarnSelected ? Theme.BgCardSelected : Theme.BgCard;
-            }
-
             var typeAccents = new Dictionary<string, SolidColorBrush>
             {
                 ["ALL"] = Theme.AccentAmber,
@@ -1277,7 +1181,7 @@ namespace EfmiConflictAuditor
 
             foreach (var kv in _modTypeCards)
             {
-                bool active = !isWarnSelected && kv.Key == _activeModTypeFilter;
+                bool active = kv.Key == _activeModTypeFilter;
                 kv.Value.border.BorderBrush = active ? typeAccents[kv.Key] : Theme.BorderSubtle;
                 kv.Value.border.Background = active ? Theme.BgCardSelected : Theme.BgCard;
             }
@@ -1344,7 +1248,7 @@ namespace EfmiConflictAuditor
                 _currentAudit.IniCount,
                 _currentAudit.ShaderOverrideCount,
                 _currentAudit.ShaderRegexCount,
-                _currentAudit.AllFindings.Count(x => x.Category != "W"));
+                _currentAudit.AllFindings.Count);
         }
 
         private void RunScan(bool? saveReportOverride)
@@ -1438,18 +1342,10 @@ namespace EfmiConflictAuditor
             _filteredConflicts = _currentAudit.AllFindings
                 .Where(item =>
                 {
-                    if (_activeCategoryFilter == "W")
-                    {
-                        if (item.Category != "W") return false;
-                    }
-                    else
-                    {
-                        if (item.Category == "W") return false;
-                        if (!MatchesModTypeFilter(item, _activeModTypeFilter))
-                            return false;
-                        if (_activeCategoryFilter != "ALL" && item.Category != _activeCategoryFilter)
-                            return false;
-                    }
+                    if (!MatchesModTypeFilter(item, _activeModTypeFilter))
+                        return false;
+                    if (_activeCategoryFilter != "ALL" && item.Category != _activeCategoryFilter)
+                        return false;
 
                     if (!string.IsNullOrEmpty(query))
                     {
