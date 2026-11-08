@@ -9,7 +9,11 @@
 
 ## 📖 User Guide
 
-The workflow in the UI goes from top to bottom: first set your `EFMI Path` (the root folder containing `Mods` and `ShaderFixes`), then click **"🔍 Scan Now"**. For normal troubleshooting, there is no need to check *"Scan disabled Mods (DISABLED_ prefix)"*.
+> 💡 **Placement & Path Selection Tips**:
+> 1. **We strongly recommend placing `EFMI_Conflict_Auditor.exe` directly inside your `EFMI` root folder.** That way, every time you launch the program, it will automatically detect the current directory and scan immediately without needing to select a path each time.
+> 2. If you manually browse for a folder, make sure to select the **`EFMI` root directory** (the parent folder that contains `Mods` and `ShaderFixes`), **NOT the `EFMI\Mods` subfolder**!
+
+The workflow in the UI goes from top to bottom: once your `EFMI Path` is set, click **"🔍 Scan Now"**. For normal troubleshooting, there is no need to check *"Scan disabled Mods (DISABLED_ prefix)"*.
 
 ### 1. ⚠️ Risk Warnings (Check This First)
 - **ShaderFixes Status**:
