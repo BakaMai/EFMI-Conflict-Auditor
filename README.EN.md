@@ -28,8 +28,12 @@ The tool first classifies Mods by their **architecture ("process")**:
 - `📦 Simple Mod`
 - `✨ FX Plugin` (Standalone shader/effect plugins such as `RabbitFX`, `CrossIBClassifier.ini`, `KatFXMatcap`, etc.)
 
-Below that, findings are grouped into 4 categories and ranked by severity from highest to lowest: **`HIGH`**, **`WARNING`**, **`INFO`**:
+#### Severity Levels (Highest to Lowest)
+- 🔴 **`HIGH`**: **High conflict risk — requires immediate attention** (very likely to cause other characters to turn black, break textures, or cause FPS drops).
+- 🟠 **`WARNING`**: **Moderate risk** — commonly present in `CrossIB` Mods and normally compatible unless visual glitches occur.
+- 🔵 **`INFO`**: **Low-risk notice** — used solely to check whether multiple Mods for the same character are enabled simultaneously.
 
+#### Four Detection Categories
 - **`A. ShaderOverride Warnings`**:
   In XXMI / 3DMigoto, `[ShaderOverride]` has the highest global priority and acts like a hard shader hijack. If a Mod is flagged as **`HIGH`** in this category (e.g., overriding a shared shader with a custom private `filter_index`), it is very likely the root cause of other characters turning black or having scrambled textures. *(Note: Standard `CrossIB` pass markers `200~205` and standard `RabbitFX`-compatible `1718.1 / 1718.2` tags are automatically downgraded to `WARNING`).*
 - **`B. ShaderRegex Warnings`**:
@@ -37,7 +41,7 @@ Below that, findings are grouped into 4 categories and ranked by severity from h
 - **`C. Duplicate ShaderRegex`**:
   Prevents duplicate placement of regex classifiers. Shared plugins (such as `RabbitFX` / `CrossIBClassifier.ini`) should only exist once in the `Mods` root directory. Even if an author renames the file (e.g. `CharacterShaderClassifier.ini` or `ShaderPassClassifier.ini`) or copy-pastes the regex classifier directly into a character's main `.ini`, this category will catch and report all duplicates.
 - **`D. Duplicate Active Character`**:
-  Active only when scanning **enabled** Mods, preventing you from accidentally enabling two or more Mods for the same character at the same time.
+  Assigned the lowest **`INFO`** severity level. Active only when scanning **enabled** Mods, preventing you from accidentally enabling two or more Mods for the same character at the same time. **Please judge from the results whether the listed Mods belong to the same character — if they belong to different characters, there is no conflict risk.**
 
 ### 3. 🛠️ Conflict Details & Code Inspector
 - Click any item on the left to inspect its root-cause analysis, troubleshooting advice, all involved `.ini` files with exact line numbers, and a live INI section code preview.
