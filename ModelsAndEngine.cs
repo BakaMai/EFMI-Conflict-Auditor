@@ -879,7 +879,15 @@ namespace EfmiConflictAuditor
                                          hasFilter &&
                                          filters.All(f => f >= 200.0 && f <= 205.0);
 
-                string severity = (hasFilter && !isStandardCrossIB) ? "HIGH" : "WARNING";
+                // Standard RabbitFX tag (1718.1 / 1718.2), optionally combined with CrossIB 200..205 if CrossIB
+                bool isStandardRabbitFX = hasFilter &&
+                                          !isStandardCrossIB &&
+                                          filters.All(f =>
+                                              Math.Abs(f - 1718.1) < 1e-4 ||
+                                              Math.Abs(f - 1718.2) < 1e-4 ||
+                                              (modType == ModArchType.CrossIB && f >= 200.0 && f <= 205.0));
+
+                string severity = (hasFilter && !isStandardCrossIB && !isStandardRabbitFX) ? "HIGH" : "WARNING";
 
                 string reasonZh;
                 string reasonEn;
@@ -887,6 +895,11 @@ namespace EfmiConflictAuditor
                 {
                     reasonZh = $"CrossIB 架构 Mod「{modId}」包含 {items.Count} 个用于跨骨骼阶段识别的 [ShaderOverride] 节（filter_index: {filterDescZh}）。这是旧版 CrossIB 正常运行所需的顶点着色器标记，通常不会影响 RabbitFX，仅在跨版本 Shader Hash 变动或与其他特殊 Mod 撞 Hash 时可能产生冲突。";
                     reasonEn = $"CrossIB Mod '{modId}' contains {items.Count} [ShaderOverride] section(s) for cross-skeleton pass detection (filter_index: {filterDescEn}). These vertex shader markers are required for legacy CrossIB to function and normally do not affect RabbitFX, only risking conflicts if shader hashes change across game updates or collide with custom Mods.";
+                }
+                else if (isStandardRabbitFX)
+                {
+                    reasonZh = $"Mod「{modId}」包含 {items.Count} 个使用 RabbitFX 标准编号的 [ShaderOverride] 节（filter_index: {filterDescZh}）。由于其写入的依然是 1718.1 / 1718.2 公共标准标签，通常可与 RabbitFX 兼容，仅在绑错着色器 Hash 或跨版本更新时可能产生异常。";
+                    reasonEn = $"Mod '{modId}' contains {items.Count} [ShaderOverride] section(s) using standard RabbitFX tags (filter_index: {filterDescEn}). Since it assigns the standard 1718.1 / 1718.2 values, it is generally compatible with RabbitFX, only risking issues if bound to the wrong shader hash or across game updates.";
                 }
                 else if (hasFilter)
                 {
@@ -946,6 +959,7 @@ namespace EfmiConflictAuditor
             // B) ShaderRegex Warnings: Every Mod (excluding FX Plugin / ShaderPatch)
             //    that contains [ShaderRegex] sections
             // =========================================================================
+            var categoryBItems = new List<ConflictItem>();
             var srByMod = allSR
                 .Where(x => x.ModType != ModArchType.ShaderPatch)
                 .GroupBy(x => x.Mod, StringComparer.OrdinalIgnoreCase)
@@ -955,6 +969,7 @@ namespace EfmiConflictAuditor
             {
                 string modId = g.Key;
                 var items = g.ToList();
+                var modType = items.First().ModType;
 
                 var filters = items
                     .Where(x => x.Filter.HasValue)
@@ -973,7 +988,7 @@ namespace EfmiConflictAuditor
                     ? string.Join(", ", filters.Select(f => f.ToString(CultureInfo.InvariantCulture)))
                     : "-";
 
-                string severity = (hasReplace || filters.Count > 0) ? "HIGH" : "WARNING";
+                string severity = (modType != ModArchType.CrossIB && (hasReplace || filters.Count > 0)) ? "HIGH" : "WARNING";
 
                 var ci = new ConflictItem
                 {
@@ -991,6 +1006,11 @@ namespace EfmiConflictAuditor
                     Sections = items
                 };
                 PopulateModMetadata(ci, items);
+                categoryBItems.Add(ci);
+            }
+
+            foreach (var ci in categoryBItems.OrderByDescending(x => x.Severity == "HIGH"))
+            {
                 result.AllFindings.Add(ci);
             }
 
