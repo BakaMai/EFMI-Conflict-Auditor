@@ -28,7 +28,7 @@ namespace EfmiConflictAuditor
         public static string LangToggleText => IsZh ? "🌐 Language: 中文" : "🌐 Language: English";
 
         // Target Bar
-        public static string TargetLabel => T("扫描目录:", "Target Path:");
+        public static string TargetLabel => T("EFMI目录:", "EFMI Path:");
         public static string BrowseBtn => T("📁 浏览...", "📁 Browse...");
         public static string OpenFolderBtn => T("📂 打开目录", "📂 Open Folder");
 

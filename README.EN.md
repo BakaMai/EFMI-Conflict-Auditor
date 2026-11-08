@@ -9,7 +9,7 @@
 
 ## 📖 User Guide
 
-The workflow in the UI goes from top to bottom: first set your `EFMI` root directory (the folder containing `Mods` and `ShaderFixes`), then click **"🔍 Scan Now"**. For normal troubleshooting, there is no need to check *"Scan disabled Mods (DISABLED_ prefix)"*.
+The workflow in the UI goes from top to bottom: first set your `EFMI Path` (the root folder containing `Mods` and `ShaderFixes`), then click **"🔍 Scan Now"**. For normal troubleshooting, there is no need to check *"Scan disabled Mods (DISABLED_ prefix)"*.
 
 ### 1. ⚠️ Risk Warnings (Check This First)
 - **ShaderFixes Status**:
@@ -39,6 +39,10 @@ Below that, findings are grouped into 4 categories and ranked by severity from h
 - Click any item on the left to inspect its root-cause analysis, troubleshooting advice, all involved `.ini` files with exact line numbers, and a live INI section code preview.
 - **📝 Open INI**: Opens the `.ini` file directly in your default Windows editor (VS Code, Notepad++, Notepad, etc.).
 - **📂 Reveal in Explorer**: Highlights the `.ini` file directly in Windows File Explorer.
+
+### 4. 📄 Export Report & AI-Assisted Analysis
+- **Local Report Saving**: Check **"Auto-save TXT Report"** or click **"📄 Export Report"** to save a full plain-text audit report (`EFMI_Conflict_Report_xxxxxx.txt`) directly inside your local `EFMI` root folder.
+- **Feed to AI Assistants**: The exported `.txt` report contains structured details of every flagged Mod, exact `.ini` file paths, line numbers, shader hashes, and `filter_index` values. You can feed this `.txt` file directly to any **AI assistant** (ChatGPT, Claude, Gemini, DeepSeek, etc.) for deeper diagnosis or automated `.ini` fix instructions!
 
 ---
 
