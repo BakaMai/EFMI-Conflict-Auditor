@@ -1,4 +1,4 @@
-# EFMI Mods Conflict Auditor v1.0
+# EFMI Mods Conflict Auditor v1.0.1
 
 🌐 **[中文说明文档 (README.md)](./README.md)**
 
@@ -39,7 +39,7 @@ The tool first classifies Mods by their **architecture ("process")**:
 - **`B. ShaderRegex Warnings`**:
   Although `[ShaderRegex]` has lower priority than `[ShaderOverride]`, some Mod authors do not follow the AGMF community standard — instead of relying on shared standalone plugins, they privately bundle classifier/cutout `.ini` files inside their character Mod folder or paste `[ShaderRegex]` code directly into the character's main `.ini`, which easily conflicts with shared FX plugins.
 - **`C. Duplicate ShaderRegex`**:
-  Prevents duplicate placement of regex classifiers. Shared plugins (such as `RabbitFX` / `CrossIBClassifier.ini`) should only exist once in the `Mods` root directory. Even if an author renames the file (e.g. `CharacterShaderClassifier.ini` or `ShaderPassClassifier.ini`) or copy-pastes the regex classifier directly into a character's main `.ini`, this category will catch and report all duplicates.
+  Prevents duplicate placement of regex classifiers and detects mutually incompatible FX plugins. Shared plugins (such as `RabbitFX` / `CrossIBClassifier.ini`) should only exist once in the `Mods` root directory. Even if an author renames the file (e.g. `CharacterShaderClassifier.ini` or `ShaderPassClassifier.ini`) or copy-pastes the regex classifier directly into a character's main `.ini`, this category will catch and report all duplicates. It also alerts you if conflicting FX plugins (such as `KatFXMatcap` and `RabbitFX`) are enabled at the same time so you can disable one of them.
 - **`D. Duplicate Active Character`**:
   Assigned the lowest **`INFO`** severity level. Active only when scanning **enabled** Mods, preventing you from accidentally enabling two or more Mods for the same character at the same time. **Please judge from the results whether the listed Mods belong to the same character — if they belong to different characters, there is no conflict risk.**
 

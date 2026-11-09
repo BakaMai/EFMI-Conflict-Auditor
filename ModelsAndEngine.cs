@@ -453,7 +453,7 @@ namespace EfmiConflictAuditor
                 string trim = line.Trim();
                 if (string.IsNullOrWhiteSpace(trim)) continue;
                 if (trim.StartsWith(";") || trim.StartsWith("#")) continue;
-                if (Regex.IsMatch(trim, @"^(?i)(hash|filter_index|allow_duplicate_hash)\s*="))
+                if (Regex.IsMatch(trim, @"^(?i)(hash|filter_index|allow_duplicate_hash|match_priority)\s*="))
                 {
                     continue;
                 }
@@ -598,6 +598,7 @@ namespace EfmiConflictAuditor
                             RelativeFile = relPath,
                             Name = name,
                             Hash = hash,
+                            PureClassifier = TestPureClassifier(section),
                             Index = m.Index,
                             Length = m.Length,
                             Line = line,
@@ -635,12 +636,13 @@ namespace EfmiConflictAuditor
         {
             var fileList = modFiles.ToList();
 
-            // Standalone Shader Patch / FX Plugin (e.g. RabbitFX, KatFXMatcap, root CrossIBClassifier.ini):
-            // Contains active [ShaderRegex] or [ShaderOverride] sections, and 0 [TextureOverride] mesh/texture hooks
-            int totalTO = fileList.Sum(f => f.TextureOverrides.Count);
+            // Standalone Shader Patch / FX Plugin (e.g. RabbitFX, EFMITTL, KatFXMatcap, root CrossIBClassifier.ini):
+            // Contains active [ShaderRegex] or [ShaderOverride] sections, and 0 real mesh/texture replacement [TextureOverride] hooks
+            // (pure filter_index probes like [TextureOverrideEFMITTLNormalSlot_36d7856a] are ignored here)
+            int realTO = fileList.Sum(f => f.TextureOverrides.Count(t => !t.PureClassifier));
             int totalSR = fileList.Sum(f => f.ShaderRegexes.Count);
             int totalSO = fileList.Sum(f => f.ShaderOverrides.Count);
-            if (totalTO == 0 && (totalSR > 0 || totalSO > 0))
+            if (realTO == 0 && (totalSR > 0 || totalSO > 0))
             {
                 return ModArchType.ShaderPatch;
             }
@@ -1100,9 +1102,9 @@ namespace EfmiConflictAuditor
                 result.AllFindings.Add(ci);
             }
 
-            // C3: Multiple Mods using [ShaderRegex.*.Pattern.Replace] on the same shader_model (AGMF community standard ASM stacking risk)
+            // C3: Multiple non-FX-Plugin Mods using [ShaderRegex.*.Pattern.Replace] on the same shader_model (AGMF community standard ASM stacking risk)
             var replaceByModelGroups = allSR
-                .Where(x => x.HasPatternReplace)
+                .Where(x => x.HasPatternReplace && x.ModType != ModArchType.ShaderPatch)
                 .GroupBy(x => (x.ShaderModel ?? "unknown").ToLowerInvariant());
 
             foreach (var g in replaceByModelGroups)
@@ -1137,6 +1139,63 @@ namespace EfmiConflictAuditor
                 result.AllFindings.Add(ci);
             }
 
+            // C4: KatFXMatcap + RabbitFX simultaneous active conflict detection
+            var katFxItems = allSR
+                .Where(x =>
+                    string.Equals(x.Name, "ShaderRegexMatcap", StringComparison.OrdinalIgnoreCase) ||
+                    x.Mod.IndexOf("KatFXMatcap", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    (x.Text != null && x.Text.IndexOf("matcap_norm", StringComparison.OrdinalIgnoreCase) >= 0))
+                .ToList();
+
+            var rabbitFxItems = allSR
+                .Where(x =>
+                    x.Mod.IndexOf("RabbitFX", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    x.RelativeFile.IndexOf("RabbitFX.ini", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    (string.Equals(x.Name, "ShaderRegexMain", StringComparison.OrdinalIgnoreCase) &&
+                     x.Filter.HasValue && Math.Abs(x.Filter.Value - 1718.1) < 1e-4))
+                .ToList();
+
+            bool hasActiveKatFx = katFxItems.Any(x => !x.ModIsDisabled);
+            bool hasActiveRabbitFx = rabbitFxItems.Any(x => !x.ModIsDisabled);
+            if (hasActiveKatFx && hasActiveRabbitFx)
+            {
+                var activeKatFx = katFxItems.Where(x => !x.ModIsDisabled).ToList();
+                var activeRabbitFx = rabbitFxItems.Where(x => !x.ModIsDisabled).ToList();
+
+                var previewRabbitFx = activeRabbitFx
+                    .Where(x => string.Equals(x.Name, "ShaderRegexMain", StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+                if (previewRabbitFx.Count == 0)
+                {
+                    previewRabbitFx = activeRabbitFx.Take(1).ToList();
+                }
+
+                var combinedPreviewSections = activeKatFx.Concat(previewRabbitFx).ToList();
+                var allInvolvedSections = activeKatFx.Concat(activeRabbitFx).ToList();
+                var involvedMods = allInvolvedSections
+                    .Select(x => x.Mod)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                var ci = new ConflictItem
+                {
+                    Id = $"C_KatFX_RabbitFX_{idCounter++}",
+                    Category = "C",
+                    Severity = "HIGH",
+                    TitleZh = "前置插件冲突: KatFXMatcap ↔ RabbitFX",
+                    TitleEn = "FX Plugin Conflict: KatFXMatcap ↔ RabbitFX",
+                    SubtitleZh = $"涉及 Mod ({involvedMods.Count}): {string.Join(" ↔ ", involvedMods)}  |  同时开启存在着色器正则冲突",
+                    SubtitleEn = $"Involved Mods ({involvedMods.Count}): {string.Join(" ↔ ", involvedMods)}  |  Incompatible when enabled together",
+                    ReasonZh = "检测到 KatFXMatcap 与 RabbitFX 同时处于启用状态。由于 3DMigoto 按字母顺序执行 [ShaderRegex]，KatFXMatcap 会在 RabbitFX 之前向角色像素着色器注入输出混合指令，导致 RabbitFX 的正则匹配器误劫持 KatFXMatcap 的指令分支，引发角色贴图失效、材质发黑或光效异常。",
+                    ReasonEn = "Detected both KatFXMatcap and RabbitFX enabled simultaneously. Because 3DMigoto executes [ShaderRegex] sections in alphabetical order, KatFXMatcap injects output blending instructions before RabbitFX runs, causing RabbitFX's regex pattern to hijack KatFXMatcap's branch and resulting in broken textures, black materials, or lighting glitches.",
+                    RecommendZh = "这两个前置插件无法同时正常运作，请关闭其中一个（在不需要的前置插件文件夹名前加上 DISABLED_ 前缀）。",
+                    RecommendEn = "These two FX plugins conflict with each other when enabled together. Please disable one of them (add the DISABLED_ prefix to its folder name).",
+                    Sections = combinedPreviewSections
+                };
+                PopulateModMetadata(ci, allInvolvedSections);
+                result.AllFindings.Add(ci);
+            }
+
             // =========================================================================
             // D) Same-Character Duplicate Active Mod Detection (同角色重复开启检测)
             //    ONLY checked and recorded when includeDisabled == false!
@@ -1144,7 +1203,7 @@ namespace EfmiConflictAuditor
             if (!includeDisabled)
             {
                 var toGroups = allTO
-                    .Where(x => !string.IsNullOrEmpty(x.Hash))
+                    .Where(x => !string.IsNullOrEmpty(x.Hash) && !x.PureClassifier)
                     .GroupBy(x => x.Hash, StringComparer.OrdinalIgnoreCase);
 
                 foreach (var g in toGroups)
@@ -1190,8 +1249,8 @@ namespace EfmiConflictAuditor
 
             sb.AppendLine("================================================================================");
             sb.AppendLine(zh
-                ? " EFMI MOD 冲突检测工具 v1.0 - 检测报告"
-                : " EFMI Mods Conflict Auditor v1.0 - Audit Report");
+                ? " EFMI MOD 冲突检测工具 v1.0.1 - 检测报告"
+                : " EFMI Mods Conflict Auditor v1.0.1 - Audit Report");
             sb.AppendLine("================================================================================");
             sb.AppendLine(zh ? $"扫描时间: {audit.ScanTime:yyyy-MM-dd HH:mm:ss}" : $"Scan Time: {audit.ScanTime:yyyy-MM-dd HH:mm:ss}");
             sb.AppendLine(zh ? $"目标路径: {audit.TargetPath}" : $"Target: {audit.TargetPath}");

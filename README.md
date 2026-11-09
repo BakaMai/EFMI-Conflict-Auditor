@@ -1,4 +1,4 @@
-# EFMI MOD 冲突检测工具 v1.0
+# EFMI MOD 冲突检测工具 v1.0.1
 
 🌐 **[English Documentation (README.EN.md)](./README.EN.md)**
 
@@ -39,7 +39,7 @@
 - **`B. ShaderRegex 警告`**：
   `ShaderRegex` 优先级虽然低于 `ShaderOverride`，但经常有 MOD 作者不按 AGMF 社区规范，没有使用公共独立插件，而是在角色 MOD 文件夹内私自夹带分类器/透明遮罩 `.ini`，甚至直接把 `ShaderRegex` 代码写在 mod 本体的 `.ini` 里面，极易与公共前置插件产生冲突。
 - **`C. 正则匹配器重复`**：
-  预防正则匹配插件重复放置。理论上只要在 `Mods` 根目录下放置一次的公共插件（如 `RabbitFX` / `CrossIBClassifier.ini`，即便被作者改成了 `CharacterShaderClassifier.ini` 或 `ShaderPassClassifier.ini` 等名字），如果在各个子文件夹下被重复放置，就会在这里报警；甚至有“甲级战犯”直接把插件内容复制粘贴到 mod 本体的 `.ini` 里面，也能一并抓出。
+  预防正则匹配插件重复放置或前置插件之间互相冲突。理论上只要在 `Mods` 根目录下放置一次的公共插件（如 `RabbitFX` / `CrossIBClassifier.ini`，即便被作者改成了 `CharacterShaderClassifier.ini` 或 `ShaderPassClassifier.ini` 等名字），如果在各个子文件夹下被重复放置，就会在这里报警；甚至有“甲级战犯”直接把插件内容复制粘贴到 mod 本体的 `.ini` 里面，也能一并抓出。此外，若同时开启了存在底层正则冲突的前置插件（如 `KatFXMatcap` 与 `RabbitFX` 同时启用），也会在此处提示用户关闭其中一个。
 - **`D. 同角色重复开启检测`**：
   此项风险等级为最低的 **`INFO`** 级。仅在扫描**启用中**的 MOD 时生效，避免同一角色身上不小心同时开启了两个或以上的 MOD。**检测结果请自行判断是否属于同一个角色，若属于不同角色即无冲突风险。**
 

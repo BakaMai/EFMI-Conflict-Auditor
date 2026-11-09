@@ -22,8 +22,8 @@ namespace EfmiConflictAuditor
 
         // Window & Header
         public static string AppTitle => T(
-            "EFMI MOD 冲突检测工具 v1.0",
-            "EFMI Mods Conflict Auditor v1.0");
+            "EFMI MOD 冲突检测工具 v1.0.1",
+            "EFMI Mods Conflict Auditor v1.0.1");
 
         public static string LangToggleText => IsZh ? "🌐 Language: 中文" : "🌐 Language: English";
 
