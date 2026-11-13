@@ -22,8 +22,8 @@ namespace EfmiConflictAuditor
 
         // Window & Header
         public static string AppTitle => T(
-            "EFMI MOD 冲突检测工具 v1.0.1",
-            "EFMI Mods Conflict Auditor v1.0.1");
+            "EFMI MOD 冲突检测工具 v1.0.2",
+            "EFMI Mods Conflict Auditor v1.0.2");
 
         public static string LangToggleText => IsZh ? "🌐 Language: 中文" : "🌐 Language: English";
 
@@ -48,6 +48,7 @@ namespace EfmiConflictAuditor
 
         // Section Headers
         public static string WarningSectionHeader => T("⚠️ 风险预警", "⚠️ Risk Warnings");
+        public static string CacheSectionHeader => T("⚡ 缓存检测与清理", "⚡ ShaderCache Manager");
         public static string ConflictSectionHeader => T("🔥 冲突检测", "🔥 Conflict Detection");
 
         // Warning Card 1: ShaderFixes Status Indicator
@@ -55,22 +56,95 @@ namespace EfmiConflictAuditor
             "🛠️ ShaderFixes 目录状态：等待扫描",
             "🛠️ ShaderFixes Status: Waiting for Scan");
         public static string SfIdleSub => T(
-            "扫描时将自动检测 ShaderFixes 文件夹内是否存在全局着色器文件",
-            "Checks whether any files exist inside the ShaderFixes folder");
+            "扫描时检测 ShaderFixes 是否存在全局着色器文件",
+            "Checks whether any files exist inside ShaderFixes");
 
         public static string SfSafeTitle => T(
             "✔ ShaderFixes 状态：空 (未使用)",
             "✔ ShaderFixes Status: Empty (Clean)");
         public static string SfSafeSub => T(
-            "文件夹内无任何文件，不会对角色 Mod 造成全局着色器干扰",
-            "No files in ShaderFixes — safe from global shader overrides");
+            "文件夹内无文件，不会造成全局着色器干扰",
+            "No files present — safe from global overrides");
 
         public static string SfWarnTitle(int count) => IsZh
             ? $"⚠️ ShaderFixes：检测到 {count} 个文件"
             : $"⚠️ ShaderFixes: {count} Files Detected";
         public static string SfWarnSub => T(
-            "全局着色器替换补丁正在使用中 , 与部分MOD存在冲突可能性",
+            "全局着色器补丁生效中，与部分 MOD 存在冲突风险",
             "Global shader files active in ShaderFixes");
+
+        // Cache Panel Sub-Card 1: ShaderCache Switch (d3dx.ini + RabbitFX ShaderCacheSettings.ini)
+        public static string CacheSwitchIdleTitle => T(
+            "⚙️ 着色器缓存：等待检测",
+            "⚙️ Shader Cache: Pending");
+        public static string CacheSwitchIdleSub => T(
+            "请选择包含 d3dx.ini 的 EFMI 根目录",
+            "Select EFMI root folder containing d3dx.ini");
+
+        public static string CacheSwitchOnTitle => T(
+            "✔ 着色器缓存：已全局开启",
+            "✔ Shader Cache: Globally Enabled");
+        public static string CacheSwitchOnSub => T(
+            "d3dx.ini: 开启 (1) · RabbitFX 缓存配置: 未启用",
+            "d3dx.ini: ON (1) · RabbitFX Cache INI: Off");
+
+        public static string CacheSwitchRabbitOnlyTitle => T(
+            "⚡ 着色器缓存：由 RabbitFX 开启",
+            "⚡ Shader Cache: ON (via RabbitFX)");
+        public static string CacheSwitchRabbitOnlySub => T(
+            "d3dx.ini 未设，由 RabbitFX 配置全局生效",
+            "d3dx.ini unset; enabled globally by RabbitFX");
+
+        public static string CacheSwitchDupOnTitle => T(
+            "⚠️ 着色器缓存：重复开启",
+            "⚠️ Shader Cache: Duplicate ON");
+        public static string CacheSwitchDupOnSub => T(
+            "d3dx.ini 与 RabbitFX 同时启用 (切换可自动规范)",
+            "Active in both d3dx.ini & RabbitFX (toggle to fix)");
+
+        public static string CacheSwitchConflictTitle => T(
+            "⚠️ 着色器缓存：配置冲突 (未生效)",
+            "⚠️ Shader Cache: Config Conflict");
+        public static string CacheSwitchConflictSub => T(
+            "d3dx.ini 关闭(0)，但 RabbitFX 仍开启了缓存配置",
+            "d3dx.ini is OFF(0), while RabbitFX INI is ON");
+
+        public static string CacheSwitchOffTitle => T(
+            "⏸ 着色器缓存：未开启",
+            "⏸ Shader Cache: Disabled");
+        public static string CacheSwitchOffSub(D3dxCacheSettingState d3dxState) => d3dxState == D3dxCacheSettingState.Disabled
+            ? T("d3dx.ini: 关闭 (0) · RabbitFX 缓存配置: 未启用", "d3dx.ini: OFF (0) · RabbitFX Cache INI: Off")
+            : T("d3dx.ini: 未开启 · RabbitFX 缓存配置: 未启用", "d3dx.ini: Unset · RabbitFX Cache INI: Off");
+
+        public static string EnableCacheBtn => T("⚡ 一键开启", "⚡ Enable");
+        public static string DisableCacheBtn => T("⏸ 一键关闭", "⏸ Disable");
+
+        // Cache Panel Sub-Card 2: ShaderCache Directory & One-Click Cleanup
+        public static string CacheFilesIdleTitle => T(
+            "📦 ShaderCache：等待检测",
+            "📦 ShaderCache: Pending");
+        public static string CacheFilesIdleSub => T(
+            "自动统计 ShaderCache 缓存文件数量与体积",
+            "Checks cached shader files inside ShaderCache");
+
+        public static string CacheFilesEmptyTitle => T(
+            "✔ ShaderCache：空 (0 个)",
+            "✔ ShaderCache: Empty (0)");
+        public static string CacheFilesEmptySub => T(
+            "当前无残留着色器缓存文件",
+            "No cached shader files remaining");
+
+        public static string CacheFilesPresentTitle(int count, string sizeText) => IsZh
+            ? $"📦 ShaderCache：{count} 个 ({sizeText})"
+            : $"📦 ShaderCache: {count} ({sizeText})";
+        public static string CacheFilesPresentSub => T(
+            "贴图残留错乱时，请先清理再按 F10 刷新",
+            "Clear before F10 reload if textures glitch");
+
+        public static string ClearCacheBtn => T("🧹 一键清理", "🧹 Clear");
+        public static string OpenCacheDirTooltip => T(
+            "在资源管理器中打开 ShaderCache 文件夹",
+            "Open ShaderCache folder in File Explorer");
 
         // Conflict Detection Row 1: Mod Type Filter Cards
         public static string TypeAllTitle => T("全部类型", "All Mod Types");

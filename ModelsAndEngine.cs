@@ -132,6 +132,44 @@ namespace EfmiConflictAuditor
         };
     }
 
+    public enum D3dxCacheSettingState
+    {
+        MissingFile,
+        NotSet,
+        Disabled,
+        Enabled
+    }
+
+    public class ShaderCacheStatus
+    {
+        public string ScanRoot { get; set; }
+        public bool IsValidEfmiRoot { get; set; }
+
+        public string D3dxIniPath { get; set; }
+        public bool HasD3dxIni { get; set; }
+        public D3dxCacheSettingState D3dxState { get; set; } = D3dxCacheSettingState.MissingFile;
+
+        public List<string> ActiveModCacheIniPaths { get; set; } = new List<string>();
+        public List<string> ActiveModCacheEnabledPaths { get; set; } = new List<string>();
+        public List<string> DisabledModCacheIniPaths { get; set; } = new List<string>();
+
+        public string ShaderCacheDirPath { get; set; }
+        public bool HasShaderCacheDir { get; set; }
+        public int CacheFileCount { get; set; }
+        public long CacheTotalBytes { get; set; }
+
+        public bool HasActiveModCacheIni => ActiveModCacheIniPaths.Count > 0;
+        public bool HasActiveModCacheEnabled => ActiveModCacheEnabledPaths.Count > 0;
+
+        public bool HasDuplicateConfig =>
+            (D3dxState == D3dxCacheSettingState.Enabled || D3dxState == D3dxCacheSettingState.Disabled) &&
+            HasActiveModCacheIni;
+
+        public bool IsEffectivelyEnabled =>
+            D3dxState == D3dxCacheSettingState.Enabled ||
+            (D3dxState == D3dxCacheSettingState.NotSet && HasActiveModCacheEnabled);
+    }
+
     public class AuditResult
     {
         public string TargetPath { get; set; }
@@ -148,6 +186,7 @@ namespace EfmiConflictAuditor
         public string ShaderFixesPath { get; set; }
         public bool HasShaderFixesFolder { get; set; }
         public int ShaderFixesFileCount { get; set; }
+        public ShaderCacheStatus CacheStatus { get; set; } = new ShaderCacheStatus();
         public Dictionary<string, ModArchType> ModTypes { get; set; } = new Dictionary<string, ModArchType>(StringComparer.OrdinalIgnoreCase);
         public int MergedSkeletonModCount => ModTypes.Values.Count(x => x == ModArchType.MergedSkeleton);
         public int CrossIBModCount => ModTypes.Values.Count(x => x == ModArchType.CrossIB);
@@ -217,6 +256,488 @@ namespace EfmiConflictAuditor
                 Encoding = encoding,
                 HasBom = hasBom
             };
+        }
+
+        public static void WriteTextPreserveEncoding(string path, string text, EncodedText original)
+        {
+            if ((File.GetAttributes(path) & FileAttributes.ReadOnly) != 0)
+            {
+                File.SetAttributes(path, File.GetAttributes(path) & ~FileAttributes.ReadOnly);
+            }
+
+            Encoding enc = original?.Encoding ?? new UTF8Encoding(false);
+            byte[] preamble = original != null && original.HasBom ? enc.GetPreamble() : Array.Empty<byte>();
+            byte[] body = enc.GetBytes(text);
+
+            if (preamble != null && preamble.Length > 0)
+            {
+                byte[] combined = new byte[preamble.Length + body.Length];
+                Buffer.BlockCopy(preamble, 0, combined, 0, preamble.Length);
+                Buffer.BlockCopy(body, 0, combined, preamble.Length, body.Length);
+                File.WriteAllBytes(path, combined);
+            }
+            else
+            {
+                File.WriteAllBytes(path, body);
+            }
+        }
+
+        public static string FormatByteSize(long bytes)
+        {
+            if (bytes <= 0) return "0 B";
+            if (bytes < 1024) return $"{bytes} B";
+            if (bytes < 1024 * 1024) return $"{(bytes / 1024.0):F1} KB";
+            if (bytes < 1024L * 1024L * 1024L) return $"{(bytes / (1024.0 * 1024.0)):F1} MB";
+            return $"{(bytes / (1024.0 * 1024.0 * 1024.0)):F2} GB";
+        }
+
+        private static D3dxCacheSettingState ParseRenderingCacheSetting(string iniText, out string cacheDirectoryRaw)
+        {
+            cacheDirectoryRaw = null;
+            if (string.IsNullOrEmpty(iniText))
+                return D3dxCacheSettingState.NotSet;
+
+            D3dxCacheSettingState? foundState = null;
+            bool inRendering = false;
+
+            using var reader = new StringReader(iniText);
+            string line;
+            while ((line = reader.ReadLine()) != null)
+            {
+                string trimmed = line.Trim();
+                if (trimmed.Length == 0 || trimmed.StartsWith(";") || trimmed.StartsWith("#"))
+                    continue;
+
+                if (trimmed.StartsWith("["))
+                {
+                    int closeIdx = trimmed.IndexOf(']');
+                    if (closeIdx > 1)
+                    {
+                        string secName = trimmed.Substring(1, closeIdx - 1).Trim();
+                        inRendering = secName.Equals("Rendering", StringComparison.OrdinalIgnoreCase);
+                        continue;
+                    }
+                }
+
+                if (!inRendering)
+                    continue;
+
+                int eqIdx = trimmed.IndexOf('=');
+                if (eqIdx <= 0)
+                    continue;
+
+                string key = trimmed.Substring(0, eqIdx).Trim();
+                string rawVal = trimmed.Substring(eqIdx + 1);
+                int commentIdx = rawVal.IndexOf(';');
+                if (commentIdx >= 0)
+                    rawVal = rawVal.Substring(0, commentIdx);
+                string val = rawVal.Trim().Trim('"');
+
+                if (key.Equals("cache_shaders", StringComparison.OrdinalIgnoreCase) && !foundState.HasValue)
+                {
+                    if (val.Equals("1", StringComparison.OrdinalIgnoreCase) ||
+                        val.Equals("true", StringComparison.OrdinalIgnoreCase) ||
+                        val.Equals("yes", StringComparison.OrdinalIgnoreCase))
+                    {
+                        foundState = D3dxCacheSettingState.Enabled;
+                    }
+                    else
+                    {
+                        foundState = D3dxCacheSettingState.Disabled;
+                    }
+                }
+                else if (key.Equals("cache_directory", StringComparison.OrdinalIgnoreCase) && string.IsNullOrEmpty(cacheDirectoryRaw))
+                {
+                    if (!string.IsNullOrWhiteSpace(val))
+                    {
+                        cacheDirectoryRaw = val;
+                    }
+                }
+            }
+
+            return foundState ?? D3dxCacheSettingState.NotSet;
+        }
+
+        public static ShaderCacheStatus InspectShaderCache(string targetPath)
+        {
+            var status = new ShaderCacheStatus();
+            string scanRoot;
+            try
+            {
+                scanRoot = GetScanRoot(targetPath);
+            }
+            catch
+            {
+                return status;
+            }
+
+            status.ScanRoot = scanRoot;
+            if (!Directory.Exists(scanRoot))
+                return status;
+
+            string d3dxPath = Path.Combine(scanRoot, "d3dx.ini");
+            string modsDir = Path.Combine(scanRoot, "Mods");
+            string shaderFixesDir = Path.Combine(scanRoot, "ShaderFixes");
+
+            bool hasD3dx = File.Exists(d3dxPath);
+            bool hasMods = Directory.Exists(modsDir);
+            bool hasSf = Directory.Exists(shaderFixesDir);
+
+            status.IsValidEfmiRoot = hasD3dx || hasMods || hasSf;
+            status.D3dxIniPath = d3dxPath;
+            status.HasD3dxIni = hasD3dx;
+
+            string cacheDirRel = "ShaderCache";
+            if (hasD3dx)
+            {
+                try
+                {
+                    var loaded = ReadTextPreserveEncoding(d3dxPath);
+                    status.D3dxState = ParseRenderingCacheSetting(loaded.Text, out string parsedCacheDir);
+                    if (!string.IsNullOrWhiteSpace(parsedCacheDir))
+                    {
+                        cacheDirRel = parsedCacheDir;
+                    }
+                }
+                catch
+                {
+                    status.D3dxState = D3dxCacheSettingState.NotSet;
+                }
+            }
+            else
+            {
+                status.D3dxState = D3dxCacheSettingState.MissingFile;
+            }
+
+            // Inspect Mods/**/ShaderCacheSettings.ini (including RabbitFX -ENDMI- in root or 2nd-level subfolders)
+            if (hasMods)
+            {
+                try
+                {
+                    var modsDirInfo = new DirectoryInfo(modsDir);
+                    foreach (var fi in modsDirInfo.EnumerateFiles("*ShaderCacheSettings*.ini", SearchOption.AllDirectories))
+                    {
+                        string nameLower = fi.Name.ToLowerInvariant();
+                        if (Regex.IsMatch(nameLower, @"\.bak($|\.|_)") ||
+                            Regex.IsMatch(nameLower, @"\.backup($|\.|_)") ||
+                            nameLower.Contains(".xxmi_bak") ||
+                            nameLower.Contains("efmicompatbackup"))
+                        {
+                            continue;
+                        }
+
+                        string relFromMods = GetRelativePath(fi.FullName, modsDir);
+                        string[] segs = relFromMods.Split(new[] { '\\', '/' }, StringSplitOptions.RemoveEmptyEntries);
+                        bool isBackupSeg = false;
+                        bool hasDisabledSeg = false;
+                        foreach (string seg in segs)
+                        {
+                            string s = seg.ToLowerInvariant();
+                            if (s == "backup" || s == "backups" || s.StartsWith("backup_") || s.Contains("xxmi_bak"))
+                            {
+                                isBackupSeg = true;
+                                break;
+                            }
+                            if (s.StartsWith("disabled"))
+                            {
+                                hasDisabledSeg = true;
+                            }
+                        }
+
+                        if (isBackupSeg)
+                            continue;
+
+                        if (hasDisabledSeg)
+                        {
+                            status.DisabledModCacheIniPaths.Add(GetRelativePath(fi.FullName, scanRoot));
+                        }
+                        else
+                        {
+                            status.ActiveModCacheIniPaths.Add(fi.FullName);
+                            try
+                            {
+                                var modIni = ReadTextPreserveEncoding(fi.FullName);
+                                var modCacheState = ParseRenderingCacheSetting(modIni.Text, out _);
+                                if (modCacheState == D3dxCacheSettingState.Enabled)
+                                {
+                                    status.ActiveModCacheEnabledPaths.Add(fi.FullName);
+                                }
+                            }
+                            catch
+                            {
+                                // Ignore read errors on individual file
+                            }
+                        }
+                    }
+                }
+                catch
+                {
+                    // Ignore directory enumeration errors
+                }
+            }
+
+            // Inspect ShaderCache directory & count cached files
+            try
+            {
+                string cacheFull = Path.IsPathRooted(cacheDirRel)
+                    ? Path.GetFullPath(cacheDirRel)
+                    : Path.GetFullPath(Path.Combine(scanRoot, cacheDirRel));
+
+                status.ShaderCacheDirPath = cacheFull;
+                status.HasShaderCacheDir = Directory.Exists(cacheFull);
+
+                if (status.HasShaderCacheDir)
+                {
+                    int count = 0;
+                    long totalBytes = 0;
+                    var dirInfo = new DirectoryInfo(cacheFull);
+                    foreach (var fi in dirInfo.EnumerateFiles("*.*", SearchOption.AllDirectories))
+                    {
+                        string n = fi.Name.ToLowerInvariant();
+                        if (n == "desktop.ini" || n == "thumbs.db" || n == ".ds_store")
+                            continue;
+                        count++;
+                        totalBytes += fi.Length;
+                    }
+                    status.CacheFileCount = count;
+                    status.CacheTotalBytes = totalBytes;
+                }
+            }
+            catch
+            {
+                status.CacheFileCount = 0;
+                status.CacheTotalBytes = 0;
+            }
+
+            return status;
+        }
+
+        public static void SetShaderCacheEnabled(string targetPath, bool enable, out int archivedModIniCount)
+        {
+            archivedModIniCount = 0;
+            string scanRoot = GetScanRoot(targetPath);
+            string d3dxPath = Path.Combine(scanRoot, "d3dx.ini");
+
+            if (!File.Exists(d3dxPath))
+            {
+                throw new FileNotFoundException(I18n.T(
+                    $"未找到 d3dx.ini 文件:\n{d3dxPath}\n请确认上方「EFMI目录」已指向正确的 EFMI 根目录。",
+                    $"d3dx.ini not found:\n{d3dxPath}\nPlease ensure 'EFMI Path' points to the EFMI root directory."));
+            }
+
+            var loaded = ReadTextPreserveEncoding(d3dxPath);
+            string nl = loaded.Text.Contains("\r\n") ? "\r\n" : "\n";
+            string normalized = loaded.Text.Replace("\r\n", "\n");
+            var lines = new List<string>(normalized.Split('\n'));
+
+            int renderingStart = -1;
+            int renderingEnd = lines.Count;
+
+            for (int i = 0; i < lines.Count; i++)
+            {
+                string t = lines[i].Trim();
+                if (t.StartsWith("["))
+                {
+                    int closeIdx = t.IndexOf(']');
+                    if (closeIdx > 1)
+                    {
+                        string sec = t.Substring(1, closeIdx - 1).Trim();
+                        if (renderingStart < 0)
+                        {
+                            if (sec.Equals("Rendering", StringComparison.OrdinalIgnoreCase))
+                            {
+                                renderingStart = i;
+                            }
+                        }
+                        else
+                        {
+                            renderingEnd = i;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            string desiredVal = enable ? "1" : "0";
+
+            if (renderingStart < 0)
+            {
+                lines.Add(string.Empty);
+                lines.Add("[Rendering]");
+                lines.Add($"cache_shaders = {desiredVal}");
+            }
+            else
+            {
+                var activeIndices = new List<int>();
+                int firstCommentedIdx = -1;
+                int cacheDirIdx = -1;
+
+                for (int i = renderingStart + 1; i < renderingEnd; i++)
+                {
+                    string raw = lines[i];
+                    string t = raw.Trim();
+                    if (t.Length == 0) continue;
+
+                    if (t.StartsWith(";") || t.StartsWith("#"))
+                    {
+                        if (firstCommentedIdx < 0 && Regex.IsMatch(t, @"^[;#]\s*cache_shaders\s*=", RegexOptions.IgnoreCase))
+                        {
+                            firstCommentedIdx = i;
+                        }
+                        continue;
+                    }
+
+                    if (Regex.IsMatch(t, @"^cache_shaders\s*=", RegexOptions.IgnoreCase))
+                    {
+                        activeIndices.Add(i);
+                    }
+                    else if (cacheDirIdx < 0 && Regex.IsMatch(t, @"^cache_directory\s*=", RegexOptions.IgnoreCase))
+                    {
+                        cacheDirIdx = i;
+                    }
+                }
+
+                if (activeIndices.Count > 0)
+                {
+                    int firstIdx = activeIndices[0];
+                    string rawLine = lines[firstIdx];
+                    var m = Regex.Match(rawLine, @"^(?<indent>\s*)cache_shaders\s*=\s*[^;#\r\n]*(?<comment>\s*[;#].*)?$", RegexOptions.IgnoreCase);
+                    string indent = m.Success ? m.Groups["indent"].Value : string.Empty;
+                    string comment = m.Success ? m.Groups["comment"].Value : string.Empty;
+                    lines[firstIdx] = $"{indent}cache_shaders = {desiredVal}{comment}";
+
+                    // Comment out any stray duplicate uncommented cache_shaders lines inside [Rendering]
+                    for (int k = 1; k < activeIndices.Count; k++)
+                    {
+                        lines[activeIndices[k]] = ";" + lines[activeIndices[k]];
+                    }
+                }
+                else if (firstCommentedIdx >= 0)
+                {
+                    string rawLine = lines[firstCommentedIdx];
+                    var m = Regex.Match(rawLine, @"^(?<indent>\s*)[;#]\s*cache_shaders\s*=", RegexOptions.IgnoreCase);
+                    string indent = m.Success ? m.Groups["indent"].Value : string.Empty;
+                    lines[firstCommentedIdx] = $"{indent}cache_shaders = {desiredVal}";
+                }
+                else
+                {
+                    int insertAt = cacheDirIdx >= 0 ? cacheDirIdx + 1 : renderingStart + 1;
+                    lines.Insert(insertAt, $"cache_shaders = {desiredVal}");
+                }
+            }
+
+            string updatedText = string.Join(nl, lines);
+            WriteTextPreserveEncoding(d3dxPath, updatedText, loaded);
+
+            // Normalize any active ShaderCacheSettings.ini inside Mods back into DISABLED\ShaderCacheSettings.ini
+            var currentStatus = InspectShaderCache(scanRoot);
+            foreach (string activeIni in currentStatus.ActiveModCacheIniPaths)
+            {
+                try
+                {
+                    if (!File.Exists(activeIni)) continue;
+                    string fileName = Path.GetFileName(activeIni);
+                    if (fileName.IndexOf("ShaderCacheSettings", StringComparison.OrdinalIgnoreCase) < 0)
+                        continue;
+
+                    string parentDir = Path.GetDirectoryName(activeIni);
+                    if (string.IsNullOrEmpty(parentDir)) continue;
+
+                    string disabledDir = Path.Combine(parentDir, "DISABLED");
+                    Directory.CreateDirectory(disabledDir);
+                    string destPath = Path.Combine(disabledDir, fileName);
+
+                    if ((File.GetAttributes(activeIni) & FileAttributes.ReadOnly) != 0)
+                    {
+                        File.SetAttributes(activeIni, File.GetAttributes(activeIni) & ~FileAttributes.ReadOnly);
+                    }
+
+                    if (File.Exists(destPath))
+                    {
+                        if ((File.GetAttributes(destPath) & FileAttributes.ReadOnly) != 0)
+                        {
+                            File.SetAttributes(destPath, File.GetAttributes(destPath) & ~FileAttributes.ReadOnly);
+                        }
+                        File.Copy(activeIni, destPath, true);
+                        File.Delete(activeIni);
+                    }
+                    else
+                    {
+                        File.Move(activeIni, destPath);
+                    }
+
+                    archivedModIniCount++;
+                }
+                catch
+                {
+                    // Ignore individual move failure if file is locked
+                }
+            }
+        }
+
+        public static void ClearShaderCacheFiles(string targetPath, out int deletedCount, out int failedCount, out long freedBytes)
+        {
+            deletedCount = 0;
+            failedCount = 0;
+            freedBytes = 0;
+
+            var status = InspectShaderCache(targetPath);
+            if (string.IsNullOrEmpty(status.ShaderCacheDirPath) || !Directory.Exists(status.ShaderCacheDirPath))
+                return;
+
+            string fullRoot = Path.GetFullPath(status.ScanRoot).TrimEnd('\\', '/');
+            string fullCache = Path.GetFullPath(status.ShaderCacheDirPath).TrimEnd('\\', '/');
+            string dirName = Path.GetFileName(fullCache);
+
+            if (string.Equals(fullRoot, fullCache, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(dirName, "Mods", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(dirName, "Core", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(dirName, "ShaderFixes", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(I18n.T(
+                    $"安全保护拦截：检测到非常规缓存路径 ({status.ShaderCacheDirPath})，已中止清理。",
+                    $"Safety guard: Refusing to clear non-standard cache directory ({status.ShaderCacheDirPath})."));
+            }
+
+            var cacheDirInfo = new DirectoryInfo(fullCache);
+            foreach (var fi in cacheDirInfo.EnumerateFiles("*.*", SearchOption.AllDirectories))
+            {
+                string n = fi.Name.ToLowerInvariant();
+                if (n == "desktop.ini" || n == "thumbs.db" || n == ".ds_store")
+                    continue;
+
+                try
+                {
+                    long len = fi.Length;
+                    if ((fi.Attributes & FileAttributes.ReadOnly) != 0)
+                    {
+                        fi.Attributes &= ~FileAttributes.ReadOnly;
+                    }
+                    fi.Delete();
+                    deletedCount++;
+                    freedBytes += len;
+                }
+                catch
+                {
+                    failedCount++;
+                }
+            }
+
+            foreach (var subDir in cacheDirInfo.EnumerateDirectories("*", SearchOption.AllDirectories)
+                .OrderByDescending(d => d.FullName.Length))
+            {
+                try
+                {
+                    if (!subDir.EnumerateFileSystemInfos().Any())
+                    {
+                        subDir.Delete(false);
+                    }
+                }
+                catch
+                {
+                    // Ignore locked subdirectory
+                }
+            }
         }
 
         public static string GetScanRoot(string inputTarget)
@@ -730,6 +1251,8 @@ namespace EfmiConflictAuditor
             {
                 return result;
             }
+
+            result.CacheStatus = InspectShaderCache(scanRoot);
 
             string modsSubDir = Path.Combine(scanRoot, "Mods");
             string shaderFixesSubDir = Path.Combine(scanRoot, "ShaderFixes");
@@ -1249,8 +1772,8 @@ namespace EfmiConflictAuditor
 
             sb.AppendLine("================================================================================");
             sb.AppendLine(zh
-                ? " EFMI MOD 冲突检测工具 v1.0.1 - 检测报告"
-                : " EFMI Mods Conflict Auditor v1.0.1 - Audit Report");
+                ? " EFMI MOD 冲突检测工具 v1.0.2 - 检测报告"
+                : " EFMI Mods Conflict Auditor v1.0.2 - Audit Report");
             sb.AppendLine("================================================================================");
             sb.AppendLine(zh ? $"扫描时间: {audit.ScanTime:yyyy-MM-dd HH:mm:ss}" : $"Scan Time: {audit.ScanTime:yyyy-MM-dd HH:mm:ss}");
             sb.AppendLine(zh ? $"目标路径: {audit.TargetPath}" : $"Target: {audit.TargetPath}");
@@ -1267,6 +1790,30 @@ namespace EfmiConflictAuditor
             sb.AppendLine(zh
                 ? $"ShaderFixes 目录状态: {(audit.ShaderFixesFileCount > 0 ? $"⚠️ 检测到 {audit.ShaderFixesFileCount} 个文件 (需注意全局着色器干扰)" : "空 (安全)")}"
                 : $"ShaderFixes Status: {(audit.ShaderFixesFileCount > 0 ? $"WARNING - {audit.ShaderFixesFileCount} file(s) present" : "Empty (Clean)")}");
+            if (audit.CacheStatus != null && audit.CacheStatus.IsValidEfmiRoot)
+            {
+                var cs = audit.CacheStatus;
+                string d3dxDescZh = cs.D3dxState switch
+                {
+                    D3dxCacheSettingState.Enabled => "开启 (1)",
+                    D3dxCacheSettingState.Disabled => "关闭 (0)",
+                    D3dxCacheSettingState.NotSet => "未配置",
+                    _ => "未找到 d3dx.ini"
+                };
+                string d3dxDescEn = cs.D3dxState switch
+                {
+                    D3dxCacheSettingState.Enabled => "ON (1)",
+                    D3dxCacheSettingState.Disabled => "OFF (0)",
+                    D3dxCacheSettingState.NotSet => "Not Set",
+                    _ => "d3dx.ini Not Found"
+                };
+                sb.AppendLine(zh
+                    ? $"着色器缓存开关: {(cs.IsEffectivelyEnabled ? "全局已开启" : "未开启")} (d3dx.ini: {d3dxDescZh}, RabbitFX ShaderCacheSettings.ini: {(cs.HasActiveModCacheIni ? "已启用" : "未启用")})"
+                    : $"Shader Cache Setting: {(cs.IsEffectivelyEnabled ? "Enabled (Global)" : "Disabled")} (d3dx.ini: {d3dxDescEn}, RabbitFX ShaderCacheSettings.ini: {(cs.HasActiveModCacheIni ? "Active" : "Disabled")})");
+                sb.AppendLine(zh
+                    ? $"ShaderCache 目录状态: {(cs.CacheFileCount > 0 ? $"{cs.CacheFileCount} 个缓存文件 ({FormatByteSize(cs.CacheTotalBytes)})" : "空 (0 个文件)")}"
+                    : $"ShaderCache Directory: {(cs.CacheFileCount > 0 ? $"{cs.CacheFileCount} cached file(s) ({FormatByteSize(cs.CacheTotalBytes)})" : "Empty (0 files)")}");
+            }
             sb.AppendLine(zh ? $"已解析 INI 文件数: {audit.IniCount}" : $"Parsed INI Files: {audit.IniCount}");
             sb.AppendLine($"ShaderOverride Sections: {audit.ShaderOverrideCount}");
             sb.AppendLine($"ShaderRegex Sections: {audit.ShaderRegexCount}");

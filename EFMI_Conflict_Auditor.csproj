@@ -8,10 +8,10 @@
     <AssemblyName>EFMI_Conflict_Auditor</AssemblyName>
     <RootNamespace>EfmiConflictAuditor</RootNamespace>
     <ApplicationIcon>app.ico</ApplicationIcon>
-    <Version>1.0.1</Version>
-    <Title>EFMI Mods Conflict Auditor v1.0.1</Title>
-    <Product>EFMI Mods Conflict Auditor v1.0.1</Product>
-    <Copyright>EFMI Modding Toolkit v1.0.1</Copyright>
+    <Version>1.0.2</Version>
+    <Title>EFMI Mods Conflict Auditor v1.0.2</Title>
+    <Product>EFMI Mods Conflict Auditor v1.0.2</Product>
+    <Copyright>EFMI Modding Toolkit v1.0.2</Copyright>
     <DebugType>none</DebugType>
     <DebugSymbols>false</DebugSymbols>
     <Deterministic>true</Deterministic>

@@ -180,6 +180,7 @@ namespace EfmiConflictAuditor
     {
         private string _currentTarget;
         private AuditResult _currentAudit;
+        private ShaderCacheStatus _currentCacheStatus;
         private string _activeModTypeFilter = "ALL"; // "ALL", "MergedSkeleton", "CrossIB", "Simple"
         private string _activeCategoryFilter = "ALL";
         private ConflictItem _selectedConflict;
@@ -204,6 +205,7 @@ namespace EfmiConflictAuditor
 
         // Section Headers
         private TextBlock _lblWarningSectionHeader;
+        private TextBlock _lblCacheSectionHeader;
         private TextBlock _lblConflictSectionHeader;
 
         // Warning Card: ShaderFixes Status Indicator
@@ -212,6 +214,18 @@ namespace EfmiConflictAuditor
         private TextBlock _lblSfSub;
         private Border _sfOpenBadge;
         private TextBlock _lblSfOpenBadge;
+
+        // ShaderCache Panel: Sub-card 1 (Global Switch) & Sub-card 2 (Cache Cleanup)
+        private Border _cacheSwitchCardBorder;
+        private TextBlock _lblCacheSwitchTitle;
+        private TextBlock _lblCacheSwitchSub;
+        private Button _btnToggleShaderCache;
+
+        private Border _cacheFilesCardBorder;
+        private TextBlock _lblCacheFilesTitle;
+        private TextBlock _lblCacheFilesSub;
+        private Button _btnClearShaderCache;
+        private Button _btnOpenShaderCacheDir;
 
         // Conflict Detection Row 1: 5 Mod Type Cards
         private readonly Dictionary<string, (Border border, TextBlock title, TextBlock count)> _modTypeCards =
@@ -259,6 +273,7 @@ namespace EfmiConflictAuditor
             Drop += OnWindowDrop;
 
             BuildUserInterface(initialIncludeDisabled);
+            RefreshShaderCacheStatusSilent();
             RefreshLanguageText();
         }
 
@@ -386,6 +401,16 @@ namespace EfmiConflictAuditor
                 {
                     _currentTarget = _txtTarget.Text.Trim();
                     RunScan(null);
+                }
+            };
+            _txtTarget.LostFocus += (s, e) =>
+            {
+                string trimmed = _txtTarget.Text.Trim();
+                if (!string.Equals(trimmed, _currentTarget, StringComparison.OrdinalIgnoreCase))
+                {
+                    _currentTarget = trimmed;
+                    RefreshShaderCacheStatusSilent();
+                    UpdateShaderCacheUI();
                 }
             };
 
@@ -545,17 +570,29 @@ namespace EfmiConflictAuditor
             };
 
             // ---------------------------------------------------------------------
-            // Panel 1: ⚠️ 风险预警 (Risk Warnings)
+            // Top Row Split:
+            //   Left  (0.76*): ⚠️ 风险预警 (ShaderFixes Status)
+            //   Right (1.44*): ⚡ 缓存检测与清理 (Cache Switch + ShaderCache Cleanup)
             // ---------------------------------------------------------------------
+            var topPanelsGrid = new Grid
+            {
+                Margin = new Thickness(0, 0, 0, 6)
+            };
+            topPanelsGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(0.72, GridUnitType.Star) });
+            topPanelsGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(10, GridUnitType.Pixel) });
+            topPanelsGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.48, GridUnitType.Star) });
+
+            // Panel 1A (Left): ⚠️ 风险预警 (Risk Warnings)
             var warningPanelBorder = new Border
             {
                 Background = Theme.BgPanel,
                 BorderBrush = Theme.BorderSubtle,
                 BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(8),
-                Margin = new Thickness(0, 0, 0, 6)
+                CornerRadius = new CornerRadius(8)
             };
-            var warningPanelStack = new StackPanel();
+            var warningPanelGrid = new Grid();
+            warningPanelGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            warningPanelGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
 
             var warningHeaderBorder = new Border
             {
@@ -572,17 +609,18 @@ namespace EfmiConflictAuditor
                 Foreground = Theme.TextPrimary
             };
             warningHeaderBorder.Child = _lblWarningSectionHeader;
-            warningPanelStack.Children.Add(warningHeaderBorder);
+            Grid.SetRow(warningHeaderBorder, 0);
+            warningPanelGrid.Children.Add(warningHeaderBorder);
 
-            // Warning Card: ShaderFixes Status Indicator (full width)
+            // Warning Card: ShaderFixes Status Indicator
             _sfIndicatorBorder = new Border
             {
                 Background = Theme.BgCard,
                 BorderBrush = Theme.BorderSubtle,
                 BorderThickness = new Thickness(1, 3, 1, 1),
                 CornerRadius = new CornerRadius(7),
-                Margin = new Thickness(10, 6, 10, 6),
-                Padding = new Thickness(12, 6, 12, 6)
+                Margin = new Thickness(8, 6, 8, 6),
+                Padding = new Thickness(11, 6, 11, 6)
             };
 
             var sfDock = new DockPanel();
@@ -593,7 +631,7 @@ namespace EfmiConflictAuditor
                 BorderThickness = new Thickness(1),
                 CornerRadius = new CornerRadius(5),
                 Padding = new Thickness(8, 3, 8, 3),
-                Margin = new Thickness(12, 0, 0, 0),
+                Margin = new Thickness(8, 0, 0, 0),
                 VerticalAlignment = VerticalAlignment.Center,
                 Cursor = Cursors.Hand
             };
@@ -615,14 +653,14 @@ namespace EfmiConflictAuditor
             var sfTextStack = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
             _lblSfTitle = new TextBlock
             {
-                FontSize = 13,
+                FontSize = 12.5,
                 FontWeight = FontWeights.Bold,
                 Foreground = Theme.TextPrimary,
                 TextTrimming = TextTrimming.CharacterEllipsis
             };
             _lblSfSub = new TextBlock
             {
-                FontSize = 11.5,
+                FontSize = 11,
                 Foreground = Theme.TextSecondary,
                 Margin = new Thickness(0, 1, 0, 0),
                 TextTrimming = TextTrimming.CharacterEllipsis
@@ -632,9 +670,172 @@ namespace EfmiConflictAuditor
             sfDock.Children.Add(sfTextStack);
 
             _sfIndicatorBorder.Child = sfDock;
-            warningPanelStack.Children.Add(_sfIndicatorBorder);
-            warningPanelBorder.Child = warningPanelStack;
-            filterMatrixStack.Children.Add(warningPanelBorder);
+            Grid.SetRow(_sfIndicatorBorder, 1);
+            warningPanelGrid.Children.Add(_sfIndicatorBorder);
+            warningPanelBorder.Child = warningPanelGrid;
+            Grid.SetColumn(warningPanelBorder, 0);
+            topPanelsGrid.Children.Add(warningPanelBorder);
+
+            // Panel 1B (Right): ⚡ 缓存检测与清理 (ShaderCache Manager)
+            var cachePanelBorder = new Border
+            {
+                Background = Theme.BgPanel,
+                BorderBrush = Theme.BorderSubtle,
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(8)
+            };
+            var cachePanelGrid = new Grid();
+            cachePanelGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            cachePanelGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+
+            var cacheHeaderBorder = new Border
+            {
+                Background = Theme.BgCard,
+                BorderBrush = Theme.BorderSubtle,
+                BorderThickness = new Thickness(0, 0, 0, 1),
+                CornerRadius = new CornerRadius(8, 8, 0, 0),
+                Padding = new Thickness(14, 6, 14, 6)
+            };
+            _lblCacheSectionHeader = new TextBlock
+            {
+                FontSize = 13,
+                FontWeight = FontWeights.Bold,
+                Foreground = Theme.TextPrimary
+            };
+            cacheHeaderBorder.Child = _lblCacheSectionHeader;
+            Grid.SetRow(cacheHeaderBorder, 0);
+            cachePanelGrid.Children.Add(cacheHeaderBorder);
+
+            var cacheCardsGrid = new Grid
+            {
+                Margin = new Thickness(8, 6, 8, 6)
+            };
+            cacheCardsGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(0.98, GridUnitType.Star) });
+            cacheCardsGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(8, GridUnitType.Pixel) });
+            cacheCardsGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.02, GridUnitType.Star) });
+
+            // Sub-card 1: Global Shader Cache Switch (d3dx.ini + RabbitFX ShaderCacheSettings.ini)
+            _cacheSwitchCardBorder = new Border
+            {
+                Background = Theme.BgCard,
+                BorderBrush = Theme.BorderSubtle,
+                BorderThickness = new Thickness(1, 3, 1, 1),
+                CornerRadius = new CornerRadius(7),
+                Padding = new Thickness(11, 6, 11, 6)
+            };
+            var cacheSwitchDock = new DockPanel();
+
+            _btnToggleShaderCache = Theme.CreateStyledButton(
+                "",
+                Theme.BgDeep,
+                Theme.TextPrimary,
+                Theme.BorderSubtle,
+                new Thickness(10, 4, 10, 4),
+                true);
+            _btnToggleShaderCache.FontSize = 11.5;
+            _btnToggleShaderCache.Margin = new Thickness(8, 0, 0, 0);
+            _btnToggleShaderCache.VerticalAlignment = VerticalAlignment.Center;
+            _btnToggleShaderCache.Click += OnToggleShaderCacheClicked;
+            DockPanel.SetDock(_btnToggleShaderCache, Dock.Right);
+            cacheSwitchDock.Children.Add(_btnToggleShaderCache);
+
+            var cacheSwitchTextStack = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+            _lblCacheSwitchTitle = new TextBlock
+            {
+                FontSize = 12.5,
+                FontWeight = FontWeights.Bold,
+                Foreground = Theme.TextPrimary,
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            _lblCacheSwitchSub = new TextBlock
+            {
+                FontSize = 11,
+                Foreground = Theme.TextSecondary,
+                Margin = new Thickness(0, 1, 0, 0),
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            cacheSwitchTextStack.Children.Add(_lblCacheSwitchTitle);
+            cacheSwitchTextStack.Children.Add(_lblCacheSwitchSub);
+            cacheSwitchDock.Children.Add(cacheSwitchTextStack);
+            _cacheSwitchCardBorder.Child = cacheSwitchDock;
+            Grid.SetColumn(_cacheSwitchCardBorder, 0);
+            cacheCardsGrid.Children.Add(_cacheSwitchCardBorder);
+
+            // Sub-card 2: ShaderCache Directory & One-Click Cleanup
+            _cacheFilesCardBorder = new Border
+            {
+                Background = Theme.BgCard,
+                BorderBrush = Theme.BorderSubtle,
+                BorderThickness = new Thickness(1, 3, 1, 1),
+                CornerRadius = new CornerRadius(7),
+                Padding = new Thickness(11, 6, 11, 6)
+            };
+            var cacheFilesDock = new DockPanel();
+
+            var cacheFilesBtnStack = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(8, 0, 0, 0)
+            };
+
+            _btnClearShaderCache = Theme.CreateStyledButton(
+                "",
+                Theme.AccentAmber,
+                Theme.TextDark,
+                Theme.AccentAmber,
+                new Thickness(10, 4, 10, 4),
+                true);
+            _btnClearShaderCache.FontSize = 11.5;
+            _btnClearShaderCache.VerticalAlignment = VerticalAlignment.Center;
+            _btnClearShaderCache.Click += OnClearShaderCacheClicked;
+            cacheFilesBtnStack.Children.Add(_btnClearShaderCache);
+
+            _btnOpenShaderCacheDir = Theme.CreateStyledButton(
+                "📂",
+                Theme.BgDeep,
+                Theme.TextSecondary,
+                Theme.BorderSubtle,
+                new Thickness(7, 4, 7, 4),
+                false);
+            _btnOpenShaderCacheDir.FontSize = 11.5;
+            _btnOpenShaderCacheDir.Margin = new Thickness(5, 0, 0, 0);
+            _btnOpenShaderCacheDir.VerticalAlignment = VerticalAlignment.Center;
+            _btnOpenShaderCacheDir.Click += OnOpenShaderCacheDirClicked;
+            cacheFilesBtnStack.Children.Add(_btnOpenShaderCacheDir);
+
+            DockPanel.SetDock(cacheFilesBtnStack, Dock.Right);
+            cacheFilesDock.Children.Add(cacheFilesBtnStack);
+
+            var cacheFilesTextStack = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+            _lblCacheFilesTitle = new TextBlock
+            {
+                FontSize = 12.5,
+                FontWeight = FontWeights.Bold,
+                Foreground = Theme.TextPrimary,
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            _lblCacheFilesSub = new TextBlock
+            {
+                FontSize = 11,
+                Foreground = Theme.TextSecondary,
+                Margin = new Thickness(0, 1, 0, 0),
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            cacheFilesTextStack.Children.Add(_lblCacheFilesTitle);
+            cacheFilesTextStack.Children.Add(_lblCacheFilesSub);
+            cacheFilesDock.Children.Add(cacheFilesTextStack);
+            _cacheFilesCardBorder.Child = cacheFilesDock;
+            Grid.SetColumn(_cacheFilesCardBorder, 2);
+            cacheCardsGrid.Children.Add(_cacheFilesCardBorder);
+
+            Grid.SetRow(cacheCardsGrid, 1);
+            cachePanelGrid.Children.Add(cacheCardsGrid);
+            cachePanelBorder.Child = cachePanelGrid;
+            Grid.SetColumn(cachePanelBorder, 2);
+            topPanelsGrid.Children.Add(cachePanelBorder);
+
+            filterMatrixStack.Children.Add(topPanelsGrid);
 
             // ---------------------------------------------------------------------
             // Panel 2: 🔥 冲突检测 (Conflict Detection)
@@ -1041,6 +1242,7 @@ namespace EfmiConflictAuditor
             _btnExportReport.Content = I18n.ExportReportBtn;
 
             _lblWarningSectionHeader.Text = I18n.WarningSectionHeader;
+            _lblCacheSectionHeader.Text = I18n.CacheSectionHeader;
             _lblConflictSectionHeader.Text = I18n.ConflictSectionHeader;
 
             if (_modTypeCards.ContainsKey("ALL")) _modTypeCards["ALL"].title.Text = I18n.TypeAllTitle;
@@ -1060,6 +1262,7 @@ namespace EfmiConflictAuditor
             _lblDetailHeader.Text = I18n.DetailHeaderTitle;
 
             UpdateShaderFixesIndicatorUI();
+            UpdateShaderCacheUI();
             UpdateCardCountsForCurrentFilter();
             UpdateCardFilterHighlights();
             UpdateActionButtonsState();
@@ -1260,8 +1463,10 @@ namespace EfmiConflictAuditor
                 bool includeDis = _chkIncludeDisabled.IsChecked == true;
 
                 _currentAudit = AuditorEngine.RunAudit(_currentTarget, includeDis);
+                _currentCacheStatus = _currentAudit.CacheStatus;
 
                 UpdateShaderFixesIndicatorUI();
+                UpdateShaderCacheUI();
                 UpdateCategoryDCardVisibility(includeDis);
                 UpdateCardCountsForCurrentFilter();
                 UpdateCardFilterHighlights();
@@ -1884,6 +2089,335 @@ namespace EfmiConflictAuditor
                 I18n.T("导出成功", "Export Complete"),
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
+        }
+
+        private void RefreshShaderCacheStatusSilent()
+        {
+            try
+            {
+                string target = _txtTarget != null ? _txtTarget.Text.Trim() : _currentTarget;
+                _currentCacheStatus = AuditorEngine.InspectShaderCache(target);
+                if (_currentAudit != null &&
+                    !string.IsNullOrEmpty(_currentCacheStatus.ScanRoot) &&
+                    string.Equals(_currentAudit.ScanRoot, _currentCacheStatus.ScanRoot, StringComparison.OrdinalIgnoreCase))
+                {
+                    _currentAudit.CacheStatus = _currentCacheStatus;
+                }
+            }
+            catch
+            {
+                _currentCacheStatus = new ShaderCacheStatus();
+            }
+        }
+
+        private void UpdateShaderCacheUI()
+        {
+            if (_cacheSwitchCardBorder == null || _cacheFilesCardBorder == null)
+                return;
+
+            _btnOpenShaderCacheDir.ToolTip = I18n.OpenCacheDirTooltip;
+            _btnClearShaderCache.Content = I18n.ClearCacheBtn;
+
+            var cs = _currentCacheStatus;
+
+            // -------------------------------------------------------------
+            // Sub-card 1: Global Shader Cache Switch
+            // -------------------------------------------------------------
+            if (cs == null || !cs.IsValidEfmiRoot || !cs.HasD3dxIni)
+            {
+                _cacheSwitchCardBorder.Background = Theme.BgCard;
+                _cacheSwitchCardBorder.BorderBrush = Theme.BorderSubtle;
+                _lblCacheSwitchTitle.Text = I18n.CacheSwitchIdleTitle;
+                _lblCacheSwitchTitle.Foreground = Theme.TextPrimary;
+                _lblCacheSwitchSub.Text = I18n.CacheSwitchIdleSub;
+                _lblCacheSwitchSub.Foreground = Theme.TextSecondary;
+                _cacheSwitchCardBorder.ToolTip = null;
+
+                _btnToggleShaderCache.Content = I18n.EnableCacheBtn;
+                _btnToggleShaderCache.IsEnabled = false;
+                _btnToggleShaderCache.Background = Theme.BgDeep;
+                _btnToggleShaderCache.Foreground = Theme.TextMuted;
+                _btnToggleShaderCache.BorderBrush = Theme.BorderSubtle;
+            }
+            else if (cs.IsEffectivelyEnabled)
+            {
+                _btnToggleShaderCache.Content = I18n.DisableCacheBtn;
+                _btnToggleShaderCache.IsEnabled = true;
+                _btnToggleShaderCache.Background = Theme.BgDeep;
+                _btnToggleShaderCache.Foreground = Theme.TextPrimary;
+                _btnToggleShaderCache.BorderBrush = Theme.BrushFromHex("#525C72");
+
+                if (cs.HasDuplicateConfig)
+                {
+                    _cacheSwitchCardBorder.Background = Theme.BrushFromHex("#382D12");
+                    _cacheSwitchCardBorder.BorderBrush = Theme.BrushFromHex("#FAAD14");
+                    _lblCacheSwitchTitle.Text = I18n.CacheSwitchDupOnTitle;
+                    _lblCacheSwitchTitle.Foreground = Theme.BrushFromHex("#FFC53D");
+                    _lblCacheSwitchSub.Text = I18n.CacheSwitchDupOnSub;
+                    _lblCacheSwitchSub.Foreground = Theme.TextPrimary;
+                }
+                else if (cs.D3dxState == D3dxCacheSettingState.NotSet && cs.HasActiveModCacheEnabled)
+                {
+                    _cacheSwitchCardBorder.Background = Theme.BrushFromHex("#122B38");
+                    _cacheSwitchCardBorder.BorderBrush = Theme.AccentCyan;
+                    _lblCacheSwitchTitle.Text = I18n.CacheSwitchRabbitOnlyTitle;
+                    _lblCacheSwitchTitle.Foreground = Theme.BrushFromHex("#69C0FF");
+                    _lblCacheSwitchSub.Text = I18n.CacheSwitchRabbitOnlySub;
+                    _lblCacheSwitchSub.Foreground = Theme.TextSecondary;
+                }
+                else
+                {
+                    _cacheSwitchCardBorder.Background = Theme.BrushFromHex("#10281E");
+                    _cacheSwitchCardBorder.BorderBrush = Theme.AccentGreen;
+                    _lblCacheSwitchTitle.Text = I18n.CacheSwitchOnTitle;
+                    _lblCacheSwitchTitle.Foreground = Theme.BrushFromHex("#58D68D");
+                    _lblCacheSwitchSub.Text = I18n.CacheSwitchOnSub;
+                    _lblCacheSwitchSub.Foreground = Theme.TextSecondary;
+                }
+
+                _cacheSwitchCardBorder.ToolTip = BuildCacheSwitchTooltip(cs);
+            }
+            else
+            {
+                _btnToggleShaderCache.Content = I18n.EnableCacheBtn;
+                _btnToggleShaderCache.IsEnabled = true;
+                _btnToggleShaderCache.Background = Theme.AccentAmber;
+                _btnToggleShaderCache.Foreground = Theme.TextDark;
+                _btnToggleShaderCache.BorderBrush = Theme.AccentAmber;
+
+                if (cs.HasActiveModCacheIni)
+                {
+                    _cacheSwitchCardBorder.Background = Theme.BrushFromHex("#3B2212");
+                    _cacheSwitchCardBorder.BorderBrush = Theme.BrushFromHex("#FF8800");
+                    _lblCacheSwitchTitle.Text = I18n.CacheSwitchConflictTitle;
+                    _lblCacheSwitchTitle.Foreground = Theme.BrushFromHex("#FFA940");
+                    _lblCacheSwitchSub.Text = I18n.CacheSwitchConflictSub;
+                    _lblCacheSwitchSub.Foreground = Theme.TextPrimary;
+                }
+                else
+                {
+                    _cacheSwitchCardBorder.Background = Theme.BgCard;
+                    _cacheSwitchCardBorder.BorderBrush = Theme.BrushFromHex("#4A5568");
+                    _lblCacheSwitchTitle.Text = I18n.CacheSwitchOffTitle;
+                    _lblCacheSwitchTitle.Foreground = Theme.TextPrimary;
+                    _lblCacheSwitchSub.Text = I18n.CacheSwitchOffSub(cs.D3dxState);
+                    _lblCacheSwitchSub.Foreground = Theme.TextSecondary;
+                }
+
+                _cacheSwitchCardBorder.ToolTip = BuildCacheSwitchTooltip(cs);
+            }
+
+            // -------------------------------------------------------------
+            // Sub-card 2: ShaderCache Directory & One-Click Clear
+            // -------------------------------------------------------------
+            if (cs == null || !cs.IsValidEfmiRoot)
+            {
+                _cacheFilesCardBorder.Background = Theme.BgCard;
+                _cacheFilesCardBorder.BorderBrush = Theme.BorderSubtle;
+                _lblCacheFilesTitle.Text = I18n.CacheFilesIdleTitle;
+                _lblCacheFilesTitle.Foreground = Theme.TextPrimary;
+                _lblCacheFilesSub.Text = I18n.CacheFilesIdleSub;
+                _lblCacheFilesSub.Foreground = Theme.TextSecondary;
+                _cacheFilesCardBorder.ToolTip = null;
+
+                _btnClearShaderCache.IsEnabled = false;
+                _btnClearShaderCache.Background = Theme.BgDeep;
+                _btnClearShaderCache.Foreground = Theme.TextMuted;
+                _btnClearShaderCache.BorderBrush = Theme.BorderSubtle;
+                _btnOpenShaderCacheDir.Visibility = Visibility.Collapsed;
+            }
+            else if (cs.CacheFileCount == 0)
+            {
+                _cacheFilesCardBorder.Background = Theme.BrushFromHex("#10281E");
+                _cacheFilesCardBorder.BorderBrush = Theme.AccentGreen;
+                _lblCacheFilesTitle.Text = I18n.CacheFilesEmptyTitle;
+                _lblCacheFilesTitle.Foreground = Theme.BrushFromHex("#58D68D");
+                _lblCacheFilesSub.Text = I18n.CacheFilesEmptySub;
+                _lblCacheFilesSub.Foreground = Theme.TextSecondary;
+                _cacheFilesCardBorder.ToolTip = cs.ShaderCacheDirPath;
+
+                _btnClearShaderCache.IsEnabled = false;
+                _btnClearShaderCache.Background = Theme.BgDeep;
+                _btnClearShaderCache.Foreground = Theme.TextSecondary;
+                _btnClearShaderCache.BorderBrush = Theme.BorderSubtle;
+                _btnOpenShaderCacheDir.Visibility = cs.HasShaderCacheDir ? Visibility.Visible : Visibility.Collapsed;
+            }
+            else
+            {
+                string sizeStr = AuditorEngine.FormatByteSize(cs.CacheTotalBytes);
+                _cacheFilesCardBorder.Background = Theme.BrushFromHex("#13263A");
+                _cacheFilesCardBorder.BorderBrush = Theme.BrushFromHex("#40A9FF");
+                _lblCacheFilesTitle.Text = I18n.CacheFilesPresentTitle(cs.CacheFileCount, sizeStr);
+                _lblCacheFilesTitle.Foreground = Theme.BrushFromHex("#69C0FF");
+                _lblCacheFilesSub.Text = I18n.CacheFilesPresentSub;
+                _lblCacheFilesSub.Foreground = Theme.TextSecondary;
+                _cacheFilesCardBorder.ToolTip = $"{cs.ShaderCacheDirPath}\n{cs.CacheFileCount} files ({sizeStr})";
+
+                _btnClearShaderCache.IsEnabled = true;
+                _btnClearShaderCache.Background = Theme.AccentAmber;
+                _btnClearShaderCache.Foreground = Theme.TextDark;
+                _btnClearShaderCache.BorderBrush = Theme.AccentAmber;
+                _btnOpenShaderCacheDir.Visibility = Visibility.Visible;
+            }
+        }
+
+        private static string BuildCacheSwitchTooltip(ShaderCacheStatus cs)
+        {
+            var sb = new StringBuilder();
+            bool zh = I18n.IsZh;
+            string d3dxVal = cs.D3dxState switch
+            {
+                D3dxCacheSettingState.Enabled => "cache_shaders = 1",
+                D3dxCacheSettingState.Disabled => "cache_shaders = 0",
+                D3dxCacheSettingState.NotSet => zh ? "未设置 (或已注释)" : "Not set (or commented out)",
+                _ => zh ? "未找到 d3dx.ini" : "d3dx.ini not found"
+            };
+            sb.AppendLine($"d3dx.ini ({cs.D3dxIniPath}): {d3dxVal}");
+
+            if (cs.ActiveModCacheIniPaths.Count > 0)
+            {
+                sb.AppendLine(zh ? "已启用的 Mod 缓存配置 (外层生效中):" : "Active Mod ShaderCacheSettings.ini:");
+                foreach (string p in cs.ActiveModCacheIniPaths)
+                {
+                    sb.AppendLine($"  • {AuditorEngine.GetRelativePath(p, cs.ScanRoot)}");
+                }
+            }
+            else if (cs.DisabledModCacheIniPaths.Count > 0)
+            {
+                sb.AppendLine(zh ? "RabbitFX 缓存配置 (收纳于 DISABLED，未启用):" : "RabbitFX ShaderCacheSettings.ini (inside DISABLED, inactive):");
+                foreach (string rel in cs.DisabledModCacheIniPaths)
+                {
+                    sb.AppendLine($"  • {rel}");
+                }
+            }
+
+            sb.Append(zh
+                ? "提示：[Rendering] cache_shaders 为 3DMigoto 全局引擎开关（非 RabbitFX 专属）。使用右侧一键开关时会自动在 d3dx.ini 中统一管理，并将外层的 ShaderCacheSettings.ini 收纳回 DISABLED 文件夹以避免重复配置。"
+                : "Note: [Rendering] cache_shaders is a global 3DMigoto engine switch (not limited to RabbitFX). Toggling here manages d3dx.ini cleanly and moves any active ShaderCacheSettings.ini back into DISABLED.");
+            return sb.ToString();
+        }
+
+        private void OnToggleShaderCacheClicked(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                Mouse.OverrideCursor = Cursors.Wait;
+                _currentTarget = _txtTarget.Text.Trim();
+                var current = AuditorEngine.InspectShaderCache(_currentTarget);
+                bool nextEnable = !current.IsEffectivelyEnabled;
+
+                AuditorEngine.SetShaderCacheEnabled(_currentTarget, nextEnable, out int archivedCount);
+                RefreshShaderCacheStatusSilent();
+                UpdateShaderCacheUI();
+
+                string archivedNoteZh = archivedCount > 0 ? $" (已自动将 {archivedCount} 个外层 ShaderCacheSettings.ini 收纳回 DISABLED)" : string.Empty;
+                string archivedNoteEn = archivedCount > 0 ? $" (moved {archivedCount} active ShaderCacheSettings.ini into DISABLED)" : string.Empty;
+
+                _lblStatusAction.Text = nextEnable
+                    ? I18n.T(
+                        $"⚡ 已开启全局着色器缓存 (d3dx.ini: cache_shaders = 1){archivedNoteZh}",
+                        $"⚡ Global Shader Cache enabled (d3dx.ini: cache_shaders = 1){archivedNoteEn}")
+                    : I18n.T(
+                        $"⏸ 已关闭全局着色器缓存 (d3dx.ini: cache_shaders = 0){archivedNoteZh}",
+                        $"⏸ Global Shader Cache disabled (d3dx.ini: cache_shaders = 0){archivedNoteEn}");
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    this,
+                    ex.Message,
+                    I18n.T("缓存开关设置失败", "Failed to Toggle Shader Cache"),
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Error);
+            }
+            finally
+            {
+                Mouse.OverrideCursor = null;
+            }
+        }
+
+        private void OnClearShaderCacheClicked(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                Mouse.OverrideCursor = Cursors.Wait;
+                _currentTarget = _txtTarget.Text.Trim();
+                AuditorEngine.ClearShaderCacheFiles(_currentTarget, out int deletedCount, out int failedCount, out long freedBytes);
+
+                RefreshShaderCacheStatusSilent();
+                UpdateShaderCacheUI();
+
+                string sizeStr = AuditorEngine.FormatByteSize(freedBytes);
+                if (failedCount == 0)
+                {
+                    _lblStatusAction.Text = I18n.T(
+                        $"🧹 已清理 {deletedCount} 个缓存文件 ({sizeStr}) — 可在游戏内按 F10 刷新",
+                        $"🧹 Cleared {deletedCount} cached files ({sizeStr}) — press F10 in-game to reload");
+                }
+                else
+                {
+                    _lblStatusAction.Text = I18n.T(
+                        $"🧹 已清理 {deletedCount} 个文件 ({sizeStr})，有 {failedCount} 个正在被占用",
+                        $"🧹 Cleared {deletedCount} files ({sizeStr}); {failedCount} locked");
+
+                    MessageBox.Show(
+                        this,
+                        I18n.T(
+                            $"成功清理 {deletedCount} 个缓存文件 ({sizeStr})。\n另有 {failedCount} 个文件当前正被游戏占用无法删除，如贴图仍未恢复可关闭游戏后再点一次清理。",
+                            $"Cleared {deletedCount} cached files ({sizeStr}).\n{failedCount} file(s) are currently locked by the game. Close the game and clear again if needed."),
+                        "ShaderCache",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Information);
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    this,
+                    ex.Message,
+                    I18n.T("清理缓存失败", "Failed to Clear ShaderCache"),
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Error);
+            }
+            finally
+            {
+                Mouse.OverrideCursor = null;
+            }
+        }
+
+        private void OnOpenShaderCacheDirClicked(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                string cacheDir = _currentCacheStatus != null && !string.IsNullOrEmpty(_currentCacheStatus.ShaderCacheDirPath)
+                    ? _currentCacheStatus.ShaderCacheDirPath
+                    : Path.Combine(AuditorEngine.GetScanRoot(_txtTarget.Text.Trim()), "ShaderCache");
+
+                if (Directory.Exists(cacheDir))
+                {
+                    Process.Start(new ProcessStartInfo
+                    {
+                        FileName = "explorer.exe",
+                        Arguments = $"\"{cacheDir}\"",
+                        UseShellExecute = true
+                    });
+                }
+                else
+                {
+                    MessageBox.Show(
+                        this,
+                        I18n.T(
+                            $"当前目录下未找到 ShaderCache 文件夹:\n{cacheDir}",
+                            $"ShaderCache folder not found:\n{cacheDir}"),
+                        "ShaderCache",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Information);
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, ex.Message);
+            }
         }
 
         private void OnShaderFixesIndicatorClicked(object sender, MouseButtonEventArgs e)
