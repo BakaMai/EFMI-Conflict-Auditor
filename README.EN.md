@@ -1,4 +1,4 @@
-# EFMI Mods Conflict Auditor v1.0.2
+# EFMI Mods Conflict Auditor v1.0.3
 
 🌐 **[中文说明文档 (README.md)](./README.md)**
 
@@ -32,19 +32,25 @@ The tool first classifies Mods by their **architecture ("process")**:
 - `✨ FX Plugin` (Standalone shader/effect plugins such as `RabbitFX`, `CrossIBClassifier.ini`, `KatFXMatcap`, etc.)
 
 #### Severity Levels (Highest to Lowest)
-- 🔴 **`HIGH`**: **High conflict risk — requires immediate attention** (very likely to cause other characters to turn black, break textures, or cause FPS drops).
-- 🟠 **`WARNING`**: **Moderate risk** — commonly present in `CrossIB` Mods and normally compatible unless visual glitches occur.
-- 🔵 **`INFO`**: **Low-risk notice** — used solely to check whether multiple Mods for the same character are enabled simultaneously.
+- 🔴 **`HIGH`**: **High conflict risk — requires immediate attention** (very likely to cause black models, broken textures, redundant global classifier clashes, or severe FPS drops).
+- 🟠 **`WARNING`**: **Moderate risk** — commonly seen on `CrossIB` Mods or unique-ID `if_nz` tag-isolated `CutoutMask.ini` shaders; compatible in normal small-scale use unless stacked heavily or visual glitches occur.
+- 🔵 **`INFO`**: **Low-risk notice** — used for compliant private-namespace classifiers (`namespace = ...`), same-character overlap checks, and Normal + Ultimate dual-form companion notices.
 
 #### Four Detection Categories
 - **`A. ShaderOverride Warnings`**:
   In XXMI / 3DMigoto, `[ShaderOverride]` has the highest global priority and acts like a hard shader hijack. If a Mod is flagged as **`HIGH`** in this category (e.g., overriding a shared shader with a custom private `filter_index`), it is very likely the root cause of other characters turning black or having scrambled textures. *(Note: Standard `CrossIB` pass markers `200~205` and standard `RabbitFX`-compatible `1718.1 / 1718.2` tags are automatically downgraded to `WARNING`).*
 - **`B. ShaderRegex Warnings`**:
-  Although `[ShaderRegex]` has lower priority than `[ShaderOverride]`, some Mod authors do not follow the AGMF community standard — instead of relying on shared standalone plugins, they privately bundle classifier/cutout `.ini` files inside their character Mod folder or paste `[ShaderRegex]` code directly into the character's main `.ini`, which easily conflicts with shared FX plugins.
+  Inspects `[ShaderRegex]` sections inside non-FX-Plugin character Mods:
+  - Classifiers using a **private `namespace`** without shared `filter_index` (e.g. `SlotClassifier.ini`) are recognized as compliant **`INFO`** notices (do NOT delete them);
+  - Bytecode injections isolated via **private `namespace` + unique constant ID `if_nz` guards** (e.g. standalone `CutoutMask.ini`) are graded **`WARNING`**;
+  - Unisolated character-bundled `[ShaderRegex]` sections remain **`HIGH`**.
 - **`C. Duplicate ShaderRegex`**:
-  Prevents duplicate placement of regex classifiers and detects mutually incompatible FX plugins. Shared plugins (such as `RabbitFX` / `CrossIBClassifier.ini`) should only exist once in the `Mods` root directory. Even if an author renames the file (e.g. `CharacterShaderClassifier.ini` or `ShaderPassClassifier.ini`) or copy-pastes the regex classifier directly into a character's main `.ini`, this category will catch and report all duplicates. It also alerts you if conflicting FX plugins (such as `KatFXMatcap` and `RabbitFX`) are enabled at the same time so you can disable one of them.
+  Distinguishes three patterns accurately:
+  1. **Duplicate shared `filter_index` (`HIGH`)**: Pinpoints redundant non-namespaced classifier copies inside character folders that duplicate root shared plugins (`CrossIBClassifier.ini` / `RabbitFX`) and can be safely deleted;
+  2. **Private-namespace template reuse (`INFO`) & unique-tag-isolated `Pattern.Replace` stacking (`WARNING`)**: Explicitly warns NOT to delete internal private classifiers or `CutoutMask.ini` files (escalates to `HIGH` only on tag ID collisions, unguarded replacements, or heavy stacking across ≥6 Mods);
+  3. **Incompatible FX plugins (`HIGH`)**: Alerts you when conflicting FX plugins (such as `KatFXMatcap` and `RabbitFX`) are enabled together.
 - **`D. Duplicate Active Character`**:
-  Assigned the lowest **`INFO`** severity level. Active only when scanning **enabled** Mods, preventing you from accidentally enabling two or more Mods for the same character at the same time. **Please judge from the results whether the listed Mods belong to the same character — if they belong to different characters, there is no conflict risk.**
+  Assigned the lowest **`INFO`** severity level. Active only when scanning **enabled** Mods, preventing accidental multi-skin overlaps on the same character. Automatically recognizes **Normal + Ultimate (`Ultimate / ult / henshin`)** dual-form companion packages and advises keeping both enabled; for other overlaps, judge whether they belong to the same character.
 
 ### 3. 🛠️ Conflict Details & Code Inspector
 - Click any item on the left to inspect its root-cause analysis, troubleshooting advice, all involved `.ini` files with exact line numbers, and a live INI section code preview.

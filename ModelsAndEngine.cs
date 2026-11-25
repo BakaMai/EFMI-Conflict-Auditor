@@ -48,6 +48,7 @@ namespace EfmiConflictAuditor
         public ModArchType ModType { get; set; }
         public string File { get; set; }
         public string RelativeFile { get; set; }
+        public string Namespace { get; set; }
         public string Name { get; set; }
         public string Hash { get; set; }
         public double? Filter { get; set; }
@@ -57,7 +58,12 @@ namespace EfmiConflictAuditor
         public bool PureClassifier { get; set; }
         public string ShaderModel { get; set; }
         public string PatternText { get; set; }
+        public string ReplaceText { get; set; }
+        public string InsertDeclText { get; set; }
         public bool HasPatternReplace { get; set; }
+        public bool IsPrivateNamespaceClassifier { get; set; }
+        public bool IsTagIsolatedReplace { get; set; }
+        public string IsolatedGuardTag { get; set; }
         public int Index { get; set; }
         public int Length { get; set; }
         public int Line { get; set; }
@@ -68,6 +74,7 @@ namespace EfmiConflictAuditor
     {
         public string FilePath { get; set; }
         public string RelativePath { get; set; }
+        public string Namespace { get; set; }
         public string ModId { get; set; }
         public bool ModIsDisabled { get; set; }
         public string ModRootPath { get; set; }
@@ -883,6 +890,37 @@ namespace EfmiConflictAuditor
                     return false;
                 }
 
+                // Multi-part single Mod package guard (e.g. "庄-Zhuang Fangyi Ink Cheongsam full ver 5.3"
+                // containing "Zhuang Fangyi Ink Cheongsam full ver 5.3" + "Zhuang Fangyi Ultimate1.4"):
+                // If an active child folder matches the outer folder's full outfit name (suffix length >= 8)
+                // and all remaining active child folders are companion form/option subfolders, treat the outer
+                // folder as ONE unified Mod package rather than a category grouping directory.
+                var activeSubNames = subDirs
+                    .Select(Path.GetFileName)
+                    .Where(n => !string.IsNullOrEmpty(n) && !n.StartsWith("disabled", StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+
+                if (activeSubNames.Count >= 2 && activeSubNames.Count <= 4)
+                {
+                    string cleanParent = folderName.Trim();
+                    bool hasMainTwinChild = activeSubNames.Any(child =>
+                        child.Length >= 8 &&
+                        cleanParent.EndsWith(child, StringComparison.OrdinalIgnoreCase));
+
+                    if (hasMainTwinChild)
+                    {
+                        bool othersAreCompanion = activeSubNames
+                            .Where(child => !(child.Length >= 8 && cleanParent.EndsWith(child, StringComparison.OrdinalIgnoreCase)))
+                            .All(IsCompanionSubfolderName);
+
+                        if (othersAreCompanion)
+                        {
+                            cache[folderFullPath] = false;
+                            return false;
+                        }
+                    }
+                }
+
                 cache[folderFullPath] = true;
                 return true;
             }
@@ -994,16 +1032,210 @@ namespace EfmiConflictAuditor
             return string.Join("\n", validLines);
         }
 
+        private static bool IsCompanionSubfolderName(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name)) return false;
+            return Regex.IsMatch(
+                name,
+                @"(?i)(\b(ultimate|ult|henshin|extra|weapon|weapons|acc|accessory|accessories|option|options|addon|addons)\b|ultimate\d|大招|变身|二阶段|武器|配件)");
+        }
+
+        private static bool IsDualFormModName(string modId)
+        {
+            if (string.IsNullOrWhiteSpace(modId)) return false;
+            return Regex.IsMatch(
+                modId,
+                @"(?i)(\b(ultimate|ult|henshin)\b|ultimate\d|大招|变身|二阶段)");
+        }
+
+        private static string ExtractTopLevelNamespace(string wholeText)
+        {
+            if (string.IsNullOrEmpty(wholeText)) return null;
+            using var reader = new StringReader(wholeText);
+            string line;
+            while ((line = reader.ReadLine()) != null)
+            {
+                string trim = line.Trim();
+                if (trim.Length == 0 || trim.StartsWith(";") || trim.StartsWith("#"))
+                    continue;
+                if (trim.StartsWith("["))
+                    break;
+
+                var m = Regex.Match(trim, @"^(?i)namespace\s*=\s*([^;#\r\n]+)");
+                if (m.Success)
+                {
+                    string ns = m.Groups[1].Value.Trim();
+                    return string.IsNullOrEmpty(ns) ? null : ns;
+                }
+            }
+            return null;
+        }
+
+        private static bool TestPrivateNamespaceClassifier(IniSectionItem sr)
+        {
+            if (sr == null || string.IsNullOrWhiteSpace(sr.Namespace) || sr.Filter.HasValue || sr.HasPatternReplace)
+                return false;
+
+            string[] lines = (sr.Text ?? string.Empty).Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+            bool first = true;
+            bool hasLocalStateWrite = false;
+
+            foreach (string raw in lines)
+            {
+                if (first)
+                {
+                    first = false;
+                    continue;
+                }
+                string trim = raw.Trim();
+                if (trim.Length == 0 || trim.StartsWith(";") || trim.StartsWith("#"))
+                    continue;
+
+                if (Regex.IsMatch(trim, @"^(?i)(shader_model|temps)\s*="))
+                    continue;
+
+                if (Regex.IsMatch(trim, @"^(?i)(if\b|elif\b|else\s+if\b|else$|endif$)"))
+                    continue;
+
+                // Strictly local namespace variable assignment ($var = ... or post $var = ...), never $\OtherNs\var
+                if (Regex.IsMatch(trim, @"^(?i)(?:post\s+)?\$[A-Za-z_][A-Za-z0-9_]*\s*="))
+                {
+                    hasLocalStateWrite = true;
+                    continue;
+                }
+
+                return false;
+            }
+
+            return hasLocalStateWrite;
+        }
+
+        private static bool AnalyzeTagIsolatedReplace(IniSectionItem sr, out string guardTag)
+        {
+            guardTag = null;
+            if (sr == null || string.IsNullOrWhiteSpace(sr.Namespace) || string.IsNullOrWhiteSpace(sr.ReplaceText))
+                return false;
+
+            // Expand literal "\n" escapes in .Pattern.Replace so each DXBC instruction sits on its own logical line
+            string expanded = sr.ReplaceText.Replace("\\n", "\n");
+            string[] lines = expanded.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+
+            int ifDepth = 0;
+            bool sawGuardedBlock = false;
+            string foundTag = null;
+
+            foreach (string raw in lines)
+            {
+                string trim = raw.Trim();
+                if (trim.Length == 0 || trim.StartsWith(";") || trim.StartsWith("#"))
+                    continue;
+
+                // Pure regex capture pass-through (e.g. ${header}, ${footer}, $0, $1)
+                if (Regex.IsMatch(trim, @"^\$(?:\{[A-Za-z0-9_]+\}|\d+)$"))
+                    continue;
+
+                if (ifDepth == 0)
+                {
+                    if (Regex.IsMatch(trim, @"^(?i)if_(?:nz|z)\b"))
+                    {
+                        ifDepth = 1;
+                        sawGuardedBlock = true;
+                        continue;
+                    }
+
+                    // Allow read-only IniParams (t120) load into a regex-declared ${temp} register
+                    if (Regex.IsMatch(trim, @"^(?i)ld(?:_indexable)?[^\r\n]*\$\{[A-Za-z0-9_]+\}\.[xyzw]+\s*,[^\r\n]*\bt120\b"))
+                    {
+                        continue;
+                    }
+
+                    // Allow equality check comparing ${temp} against a unique literal constant ID (>= 10)
+                    var eqMatch = Regex.Match(
+                        trim,
+                        @"^(?i)(?:eq|ieq)\s+\$\{[A-Za-z0-9_]+\}\.[xyzw]+\s*,\s*(?:\$\{[A-Za-z0-9_]+\}\.[xyzw]+\s*,\s*l\((?<num>[-+]?\d+(?:\.\d+)?)\)|l\((?<num>[-+]?\d+(?:\.\d+)?)\)\s*,\s*\$\{[A-Za-z0-9_]+\}\.[xyzw]+)");
+                    if (eqMatch.Success &&
+                        double.TryParse(eqMatch.Groups["num"].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out double numVal) &&
+                        Math.Abs(numVal) >= 10.0)
+                    {
+                        foundTag = numVal.ToString("0.######", CultureInfo.InvariantCulture);
+                        continue;
+                    }
+
+                    // Any other unguarded instruction outside if_nz / if_z disqualifies tag isolation
+                    return false;
+                }
+                else
+                {
+                    if (Regex.IsMatch(trim, @"^(?i)if_(?:nz|z)\b"))
+                    {
+                        ifDepth++;
+                    }
+                    else if (Regex.IsMatch(trim, @"^(?i)endif\b"))
+                    {
+                        ifDepth--;
+                        if (ifDepth < 0) return false;
+                    }
+                }
+            }
+
+            if (sawGuardedBlock && ifDepth == 0 && !string.IsNullOrEmpty(foundTag))
+            {
+                guardTag = foundTag;
+                return true;
+            }
+
+            return false;
+        }
+
+        private static string ExtractShaderTargetSignature(string shaderModel, string patternText)
+        {
+            string sm = (shaderModel ?? "unknown").Trim().ToLowerInvariant();
+            if (string.IsNullOrWhiteSpace(patternText))
+                return $"{sm}::*";
+
+            string norm = patternText.Replace(@"\h", " ");
+            var cbTokens = new List<string>();
+            foreach (Match m in Regex.Matches(norm, @"(?i)dcl_constantbuffer\s+CB(?<slot>\\d\+|\d+)\[(?<size>[^\]]+)\]"))
+            {
+                string slot = m.Groups["slot"].Value;
+                string size = Regex.Replace(m.Groups["size"].Value, @"\s+", "");
+                // Normalize CB\d+[4086|4094] and CB2[4086|4094] to the same high-specificity CB size bucket when size >= 3 digits
+                string slotKey = (slot == @"\d+" || size.Length >= 4) ? "CB*" : $"CB{slot}";
+                cbTokens.Add($"{slotKey}[{size}]");
+            }
+
+            if (cbTokens.Count > 0)
+            {
+                var sorted = cbTokens.Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x, StringComparer.OrdinalIgnoreCase);
+                return $"{sm}::{string.Join("+", sorted)}";
+            }
+
+            var outTokens = new List<string>();
+            foreach (Match m in Regex.Matches(norm, @"(?i)\bo(?<idx>\d+)\b"))
+            {
+                outTokens.Add($"o{m.Groups["idx"].Value}");
+            }
+            if (outTokens.Count > 0)
+            {
+                var sortedOut = outTokens.Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x, StringComparer.OrdinalIgnoreCase);
+                return $"{sm}::out({string.Join(",", sortedOut)})";
+            }
+
+            return $"{sm}::*";
+        }
+
         public static ParsedIniFile ParseIni(FileInfo file, ModIdentity modIdentity, string scanRoot)
         {
             EncodedText loaded = ReadTextPreserveEncoding(file.FullName);
             string text = loaded.Text;
             string relPath = GetRelativePath(file.FullName, scanRoot);
+            string fileNamespace = ExtractTopLevelNamespace(text);
 
             var parsed = new ParsedIniFile
             {
                 FilePath = file.FullName,
                 RelativePath = relPath,
+                Namespace = fileNamespace,
                 ModId = modIdentity.ModId,
                 ModIsDisabled = modIdentity.IsDisabled,
                 ModRootPath = modIdentity.ModRootPath,
@@ -1012,6 +1244,8 @@ namespace EfmiConflictAuditor
 
             var regexRootSections = new Dictionary<string, IniSectionItem>(StringComparer.OrdinalIgnoreCase);
             var regexPatterns = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var regexReplaces = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var regexInsertDecls = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             var regexHasReplace = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             foreach (Match m in SectionRegex.Matches(text))
@@ -1045,6 +1279,7 @@ namespace EfmiConflictAuditor
                         ModIsDisabled = modIdentity.IsDisabled,
                         File = file.FullName,
                         RelativeFile = relPath,
+                        Namespace = fileNamespace,
                         Name = name,
                         Hash = hash,
                         Filter = filterNum,
@@ -1069,10 +1304,12 @@ namespace EfmiConflictAuditor
                     {
                         string rootName = name.Substring(0, name.Length - ".Pattern.Replace".Length);
                         regexHasReplace.Add(rootName);
+                        regexReplaces[rootName] = ExtractSectionBodyWithoutHeader(section);
                     }
                     else if (name.EndsWith(".InsertDeclarations", StringComparison.OrdinalIgnoreCase))
                     {
-                        // Sub-section of ShaderRegex, attach info via root
+                        string rootName = name.Substring(0, name.Length - ".InsertDeclarations".Length);
+                        regexInsertDecls[rootName] = ExtractSectionBodyWithoutHeader(section);
                     }
                     else
                     {
@@ -1092,6 +1329,7 @@ namespace EfmiConflictAuditor
                             ModIsDisabled = modIdentity.IsDisabled,
                             File = file.FullName,
                             RelativeFile = relPath,
+                            Namespace = fileNamespace,
                             Name = name,
                             Filter = filterNum,
                             FilterRaw = filter,
@@ -1117,6 +1355,7 @@ namespace EfmiConflictAuditor
                             ModIsDisabled = modIdentity.IsDisabled,
                             File = file.FullName,
                             RelativeFile = relPath,
+                            Namespace = fileNamespace,
                             Name = name,
                             Hash = hash,
                             PureClassifier = TestPureClassifier(section),
@@ -1129,16 +1368,31 @@ namespace EfmiConflictAuditor
                 }
             }
 
-            // Link ShaderRegex patterns & replace flags to their root ShaderRegex sections
+            // Link ShaderRegex patterns, replace bodies, private-namespace flags & tag-isolation fingerprints
             foreach (var sr in parsed.ShaderRegexes)
             {
                 if (regexPatterns.TryGetValue(sr.Name, out string pat))
                 {
                     sr.PatternText = pat;
                 }
+                if (regexInsertDecls.TryGetValue(sr.Name, out string insDecl))
+                {
+                    sr.InsertDeclText = insDecl;
+                }
                 if (regexHasReplace.Contains(sr.Name))
                 {
                     sr.HasPatternReplace = true;
+                    if (regexReplaces.TryGetValue(sr.Name, out string repBody))
+                    {
+                        sr.ReplaceText = repBody;
+                    }
+                }
+
+                sr.IsPrivateNamespaceClassifier = TestPrivateNamespaceClassifier(sr);
+                if (sr.HasPatternReplace && AnalyzeTagIsolatedReplace(sr, out string guardTag))
+                {
+                    sr.IsTagIsolatedReplace = true;
+                    sr.IsolatedGuardTag = guardTag;
                 }
             }
 
@@ -1504,6 +1758,21 @@ namespace EfmiConflictAuditor
                     .ToList();
 
                 bool hasReplace = items.Any(x => x.HasPatternReplace);
+                bool allPrivateClassifiers = items.All(x => x.IsPrivateNamespaceClassifier);
+                bool allSafelyIsolated = items.All(x => x.IsPrivateNamespaceClassifier || x.IsTagIsolatedReplace);
+
+                var namespaces = items
+                    .Where(x => !string.IsNullOrWhiteSpace(x.Namespace))
+                    .Select(x => x.Namespace)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                var guardTags = items
+                    .Where(x => x.IsTagIsolatedReplace && !string.IsNullOrWhiteSpace(x.IsolatedGuardTag))
+                    .Select(x => x.IsolatedGuardTag)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
                 var secNames = items.Select(x => x.Name).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
                 string secPreview = secNames.Count <= 3
                     ? string.Join(", ", secNames)
@@ -1513,28 +1782,77 @@ namespace EfmiConflictAuditor
                     ? string.Join(", ", filters.Select(f => f.ToString(CultureInfo.InvariantCulture)))
                     : "-";
 
-                string severity = (modType != ModArchType.CrossIB && (hasReplace || filters.Count > 0)) ? "HIGH" : "WARNING";
+                string nsDescZh = namespaces.Count > 0 ? string.Join(", ", namespaces) : "未声明 (全局)";
+                string nsDescEn = namespaces.Count > 0 ? string.Join(", ", namespaces) : "None (Global)";
+
+                string severity;
+                string titleZh;
+                string titleEn;
+                string subtitleZh;
+                string subtitleEn;
+                string reasonZh;
+                string reasonEn;
+                string recommendZh;
+                string recommendEn;
+
+                if (allPrivateClassifiers)
+                {
+                    severity = "INFO";
+                    titleZh = $"ShaderRegex 提示 (私有命名空间分类器): {modId} ({items.Count} 个节)";
+                    titleEn = $"ShaderRegex Notice (Private Namespace Classifier): {modId} ({items.Count} section(s))";
+                    subtitleZh = $"namespace: [{nsDescZh}]  |  filter_index: [-]  |  仅写入私有状态变量";
+                    subtitleEn = $"namespace: [{nsDescEn}]  |  filter_index: [-]  |  Private state only";
+                    reasonZh = $"Mod「{modId}」内置了声明独立私有命名空间（{nsDescZh}）的阶段识别分类器（共 {items.Count} 个节），未占用公共 filter_index，也未修改着色器字节码。该写法在原理上不会与 RabbitFX 或公共 CrossIBClassifier.ini 产生冲突。";
+                    reasonEn = $"Mod '{modId}' uses private-namespace [ShaderRegex] state classifier(s) ({nsDescEn}) without writing shared filter_index or patching shader bytecode. By design, it cannot conflict with RabbitFX or shared CrossIBClassifier.ini.";
+                    recommendZh = "合规的私有命名空间写法，可安全共存，无需处理；切勿删除或禁用该分类器文件（如 SlotClassifier.ini / 带私有 namespace 的 CrossIBClassifier.ini），否则会导致该 Mod 阶段识别失效。";
+                    recommendEn = "Compliant private-namespace pattern — safe to keep as-is. Do NOT delete this Mod's internal classifier INI, or its pass detection will break.";
+                }
+                else if (allSafelyIsolated && hasReplace)
+                {
+                    severity = "WARNING";
+                    string tagDesc = guardTags.Count > 0 ? string.Join(", ", guardTags) : "-";
+                    titleZh = $"ShaderRegex 提示 (独立 ID 隔离注入): {modId} ({items.Count} 个节)";
+                    titleEn = $"ShaderRegex Warning (Tag-Isolated Injection): {modId} ({items.Count} section(s))";
+                    subtitleZh = $"namespace: [{nsDescZh}]  |  隔离常量 ID: [{tagDesc}]  |  含 Pattern.Replace: 是 (if_nz 自保护)";
+                    subtitleEn = $"namespace: [{nsDescEn}]  |  Guard ID: [{tagDesc}]  |  Pattern.Replace: Yes (if_nz guarded)";
+                    reasonZh = $"Mod「{modId}」包含带独立命名空间（{nsDescZh}）与唯一常量 ID（{tagDesc}）条件保护的着色器字节码注入（如独立 CutoutMask.ini 透明遮罩）及私有分类器。运行时仅对该 Mod 自身网格生效，少量开启可与公共前置插件正常共存，但每份注入仍会向匹配的着色器增加少量寄存器与指令开销。";
+                    reasonEn = $"Mod '{modId}' contains [ShaderRegex.*.Pattern.Replace] bytecode injection guarded by private namespace ({nsDescEn}) and unique constant ID ({tagDesc}, e.g. standalone CutoutMask.ini). Runtime execution is isolated to this Mod's own draws and coexists normally in small numbers, with minor per-shader instruction overhead.";
+                    recommendZh = "常规游玩可正常兼容共存，无需停用该 Mod，也请勿删除其内部的 CutoutMask.ini / SlotClassifier.ini 等功能文件；仅在同时开启过多同类型注入 Mod 导致加载卡顿或画面异常时再行排查。";
+                    recommendEn = "Compatible in normal use — no need to disable this Mod, and do NOT delete its internal CutoutMask.ini / SlotClassifier.ini files. Only investigate if stacking many similar Mods causes shader load stutter or glitches.";
+                }
+                else
+                {
+                    severity = (modType != ModArchType.CrossIB && (hasReplace || filters.Count > 0)) ? "HIGH" : "WARNING";
+                    titleZh = $"ShaderRegex 警告: {modId} ({items.Count} 个节)";
+                    titleEn = $"ShaderRegex Warning: {modId} ({items.Count} section(s))";
+                    subtitleZh = $"包含节: {secPreview}  |  namespace: [{nsDescZh}]  |  filter_index: [{filterDesc}]  |  含 Pattern.Replace: {(hasReplace ? "是" : "否")}";
+                    subtitleEn = $"Sections: {secPreview}  |  namespace: [{nsDescEn}]  |  filter_index: [{filterDesc}]  |  Has Pattern.Replace: {(hasReplace ? "Yes" : "No")}";
+                    reasonZh = $"非前置插件 Mod「{modId}」包含 {items.Count} 个未完全隔离的 [ShaderRegex] 正则匹配节（占用公共 filter_index 或包含无唯一常量隔离的字节码替换），易与公共前置插件（如 RabbitFX / CrossIBClassifier）或其他 Mod 发生冲突。";
+                    reasonEn = $"Non-FX-Plugin Mod '{modId}' contains {items.Count} unisolated [ShaderRegex] section(s) (writing shared filter_index or unguarded Pattern.Replace), which may conflict with shared FX plugins (such as RabbitFX / CrossIBClassifier) or other Mods.";
+                    recommendZh = "若游戏内出现画面异常，请停用该 Mod（在文件夹名前加上 DISABLED_ 前缀），或将其改造为私有命名空间 / [CustomShader] 方案。";
+                    recommendEn = "If visual glitches occur in-game, disable this Mod (add the DISABLED_ prefix to its folder) or refactor it to use private namespaces / [CustomShader].";
+                }
 
                 var ci = new ConflictItem
                 {
                     Id = $"B_{idCounter++}",
                     Category = "B",
                     Severity = severity,
-                    TitleZh = $"ShaderRegex 警告: {modId} ({items.Count} 个节)",
-                    TitleEn = $"ShaderRegex Warning: {modId} ({items.Count} section(s))",
-                    SubtitleZh = $"包含节: {secPreview}  |  filter_index: [{filterDesc}]  |  含 Pattern.Replace: {(hasReplace ? "是" : "否")}",
-                    SubtitleEn = $"Sections: {secPreview}  |  filter_index: [{filterDesc}]  |  Has Pattern.Replace: {(hasReplace ? "Yes" : "No")}",
-                    ReasonZh = $"非前置插件 Mod「{modId}」包含 {items.Count} 个 [ShaderRegex] 正则匹配节。易与公共前置插件（如 RabbitFX / CrossIBClassifier）发生冲突。",
-                    ReasonEn = $"Non-FX-Plugin Mod '{modId}' contains {items.Count} [ShaderRegex] section(s). May conflict with shared FX plugins (such as RabbitFX / CrossIBClassifier).",
-                    RecommendZh = "若游戏内出现画面异常，请直接停用该 Mod（在文件夹名前加上 DISABLED_ 前缀）。",
-                    RecommendEn = "If visual glitches occur in-game, please disable this Mod (add the DISABLED_ prefix to its folder).",
+                    TitleZh = titleZh,
+                    TitleEn = titleEn,
+                    SubtitleZh = subtitleZh,
+                    SubtitleEn = subtitleEn,
+                    ReasonZh = reasonZh,
+                    ReasonEn = reasonEn,
+                    RecommendZh = recommendZh,
+                    RecommendEn = recommendEn,
                     Sections = items
                 };
                 PopulateModMetadata(ci, items);
                 categoryBItems.Add(ci);
             }
 
-            foreach (var ci in categoryBItems.OrderByDescending(x => x.Severity == "HIGH"))
+            foreach (var ci in categoryBItems.OrderBy(x => SeverityRank(x.Severity)))
             {
                 result.AllFindings.Add(ci);
             }
@@ -1542,6 +1860,8 @@ namespace EfmiConflictAuditor
             // =========================================================================
             // C) Duplicate ShaderRegex Conflict Detection (正则匹配器重复)
             // =========================================================================
+            var categoryCItems = new List<ConflictItem>();
+
             // C1: Same filter_index declared by ShaderRegex in multiple different Mods
             var srFilterGroups = allSR
                 .Where(x => x.Filter.HasValue)
@@ -1554,26 +1874,55 @@ namespace EfmiConflictAuditor
                 if (mods.Count < 2) continue;
 
                 string fVal = g.Key.ToString(CultureInfo.InvariantCulture);
+                var sharedPluginFiles = items
+                    .Where(x => x.ModType == ModArchType.ShaderPatch)
+                    .Select(x => x.RelativeFile)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                var bundledCharFiles = items
+                    .Where(x => x.ModType != ModArchType.ShaderPatch && string.IsNullOrWhiteSpace(x.Namespace))
+                    .Select(x => x.RelativeFile)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                string recommendZh;
+                string recommendEn;
+                if (sharedPluginFiles.Count > 0 && bundledCharFiles.Count > 0)
+                {
+                    string keepList = string.Join(", ", sharedPluginFiles);
+                    string dropList = string.Join(", ", bundledCharFiles);
+                    recommendZh = $"检测到角色 Mod 内部夹带了与公共分类器相同的无命名空间冗余副本！建议保留公共前置文件（{keepList}），直接删除或加 DISABLED_ 前缀停用角色目录内的冗余副本（{dropList}）。";
+                    recommendEn = $"Detected redundant non-namespaced copy of a shared classifier inside character Mod folder(s)! Keep the shared plugin ({keepList}) and safely delete or prefix DISABLED_ on the duplicate copy ({dropList}).";
+                }
+                else
+                {
+                    recommendZh = "建议保留唯一的公共 ShaderRegex 提供者（如根目录 CrossIBClassifier.ini 或 RabbitFX），将其他角色 Mod 内部重复写入相同公共 filter_index 的冗余分类器副本删除或禁用。";
+                    recommendEn = "Keep a single shared ShaderRegex provider (such as root CrossIBClassifier.ini or RabbitFX) and remove/disable duplicate non-namespaced copies writing the same shared filter_index.";
+                }
+
                 var ci = new ConflictItem
                 {
                     Id = $"C_Filter_{idCounter++}",
                     Category = "C",
                     Severity = "HIGH",
-                    TitleZh = $"正则匹配器重复 (filter_index = {fVal})",
-                    TitleEn = $"Duplicate ShaderRegex (filter_index = {fVal})",
+                    TitleZh = $"正则匹配器重复 · 共享 filter_index = {fVal}",
+                    TitleEn = $"Duplicate ShaderRegex · Shared filter_index = {fVal}",
                     SubtitleZh = $"涉及 Mod ({mods.Count}): {string.Join(" ↔ ", mods)}",
                     SubtitleEn = $"Involved Mods ({mods.Count}): {string.Join(" ↔ ", mods)}",
-                    ReasonZh = $"多个不同的 Mod 同时定义了分配相同 filter_index ({fVal}) 的 [ShaderRegex]！这通常意味着某个角色 Mod 私自内置了一份全局分类器副本，与公共组件或其他 Mod 发生重复匹配，会导致着色器分类覆盖、掉帧或渲染异常。",
-                    ReasonEn = $"Multiple Mods define [ShaderRegex] assigning the same filter_index ({fVal})! Usually caused by a character Mod bundling its own private copy of global regex classifiers, causing redundant regex evaluation, classification override, or FPS drops.",
-                    RecommendZh = "建议保留唯一的公共 ShaderRegex 提供者（如 RabbitFX），将角色 Mod 内部重复夹带的冗余 ShaderRegex 节删除或禁用。",
-                    RecommendEn = "Keep a single shared ShaderRegex provider (such as RabbitFX) and remove/disable duplicate bundled ShaderRegex sections inside individual character Mods.",
+                    ReasonZh = $"多个不同的 Mod 同时定义了写入相同公共 filter_index ({fVal}) 的 [ShaderRegex]。这通常是因为角色 Mod 私自打包了一份全局分类器的冗余副本，与公共分类器产生重复正则匹配开销，且若匹配规则不一致会互相污染公共 filter 桶。",
+                    ReasonEn = $"Multiple Mods define [ShaderRegex] assigning the same shared filter_index ({fVal}). Usually caused by a character Mod bundling a redundant copy of a global classifier, adding duplicate regex overhead and risking filter bucket pollution if patterns diverge.",
+                    RecommendZh = recommendZh,
+                    RecommendEn = recommendEn,
                     Sections = items
                 };
                 PopulateModMetadata(ci, items);
-                result.AllFindings.Add(ci);
+                categoryCItems.Add(ci);
             }
 
-            // C2: Identical ShaderRegex .Pattern across multiple Mods (especially with .Pattern.Replace ASM injection!)
+            // Track sections already covered in C2 so C3 never double-counts them
+            var c2ReportedReplaceSections = new HashSet<IniSectionItem>();
+
+            // C2: Identical ShaderRegex .Pattern across multiple Mods
             var srPatternGroups = allSR
                 .Where(x => !string.IsNullOrWhiteSpace(x.PatternText))
                 .GroupBy(x => NormalizePatternForComparison(x.PatternText), StringComparer.Ordinal);
@@ -1591,75 +1940,181 @@ namespace EfmiConflictAuditor
                 }
 
                 bool hasReplace = items.Any(x => x.HasPatternReplace);
-                string severity = hasReplace ? "HIGH" : "WARNING";
                 string sampleName = items.First().Name;
+
+                // Case C2-A: Pure private-namespace classifiers (e.g. SlotClassifier.ini / ASlot_xxxxx CrossIBClassifier.ini)
+                bool allPrivateNsClassifiers = !hasReplace &&
+                    items.All(x => x.IsPrivateNamespaceClassifier) &&
+                    AreNamespacesDistinctAcrossMods(items);
+
+                // Case C2-B: Tag-isolated Pattern.Replace (e.g. standalone CutoutMask.ini with unique eq + if_nz constant per Mod)
+                var replaceItems = items.Where(x => x.HasPatternReplace).ToList();
+                bool allTagIsolatedReplace = hasReplace &&
+                    items.All(x => x.IsTagIsolatedReplace) &&
+                    AreReplaceSectionsUniquelyTagIsolated(replaceItems);
+
+                if (hasReplace)
+                {
+                    foreach (var ri in replaceItems)
+                    {
+                        c2ReportedReplaceSections.Add(ri);
+                    }
+                }
+
+                string severity;
+                string titleZh;
+                string titleEn;
+                string subtitleZh;
+                string subtitleEn;
+                string reasonZh;
+                string reasonEn;
+                string recommendZh;
+                string recommendEn;
+
+                if (allPrivateNsClassifiers)
+                {
+                    var nsList = items.Select(x => x.Namespace).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                    severity = "INFO";
+                    titleZh = $"正则模板复用 · 私有命名空间隔离 ([{sampleName}])";
+                    titleEn = $"Shared Regex Template · Private Namespace Isolated ([{sampleName}])";
+                    subtitleZh = $"涉及 Mod ({mods.Count}): {string.Join(" ↔ ", mods)}  |  独立 namespace ({nsList.Count}): {string.Join(", ", nsList.Take(4))}{(nsList.Count > 4 ? " ..." : "")}";
+                    subtitleEn = $"Mods ({mods.Count}): {string.Join(" ↔ ", mods)}  |  Private namespaces ({nsList.Count}): {string.Join(", ", nsList.Take(4))}{(nsList.Count > 4 ? " ..." : "")}";
+                    reasonZh = $"多个 Mod 使用了相同的着色器阶段识别正则模板，但各自均声明了独立的私有 namespace 且未写入公共 filter_index。各 Mod 状态变量彼此完全隔离，不会产生冲突（仅在首次加载着色器时有轻微重复正则匹配开销）。";
+                    reasonEn = $"Multiple Mods reuse the same shader classification regex template, but each declares its own private namespace without writing shared filter_index. State variables are strictly isolated with zero conflict risk (only minor startup regex matching overhead).";
+                    recommendZh = "这些文件并非公共插件的冗余副本，而是各 Mod 自身必需的私有分类器——切勿删除各 Mod 内部的该文件（如 SlotClassifier.ini 或带独立 namespace 的 CrossIBClassifier.ini），否则会导致该 Mod 渲染异常！正常共存即可，无需处理。";
+                    recommendEn = "These are NOT redundant copies of a public plugin, but private classifiers required by each Mod — do NOT delete them, or the Mod's pass detection will fail! Safe to leave as-is.";
+                }
+                else if (allTagIsolatedReplace)
+                {
+                    var tags = replaceItems.Select(x => x.IsolatedGuardTag).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                    string tagSummary = string.Join(", ", tags.Take(5)) + (tags.Count > 5 ? $" ... (+{tags.Count - 5})" : "");
+                    bool heavyStacking = mods.Count >= 6;
+                    severity = heavyStacking ? "HIGH" : "WARNING";
+                    titleZh = heavyStacking
+                        ? $"正则字节码叠加过多 · 唯一 ID 隔离 ([{sampleName}])"
+                        : $"正则字节码注入叠加 · 已做唯一 ID 隔离 ([{sampleName}])";
+                    titleEn = heavyStacking
+                        ? $"Heavy Tag-Isolated Regex ASM Stacking ([{sampleName}])"
+                        : $"Stacked Regex ASM Injection · Tag-Isolated ([{sampleName}])";
+                    subtitleZh = $"涉及 Mod ({mods.Count}): {string.Join(" ↔ ", mods)}  |  唯一隔离 ID: [{tagSummary}]";
+                    subtitleEn = $"Mods ({mods.Count}): {string.Join(" ↔ ", mods)}  |  Unique Guard IDs: [{tagSummary}]";
+                    reasonZh = $"检测到 {mods.Count} 个 Mod 对同一类着色器注入了字节码（如独立 CutoutMask.ini 透明遮罩），但各自均使用独立 namespace 与互不相同的唯一常量 ID（{tagSummary}）包裹在 if_nz 条件内，运行时逻辑互不污染。每增加一份此类正则会在命中的着色器上叠加约 4 个临时寄存器与十余条指令{(heavyStacking ? "，当前同时开启数量较多，可能引起首次切图编译卡顿或寄存器压力。" : "，当前数量较少可稳定共存。")}";
+                    reasonEn = $"Detected {mods.Count} Mods injecting ASM bytecode into the same shader pattern (e.g. standalone CutoutMask.ini), each isolated by a distinct namespace and unique if_nz constant ID ({tagSummary}) so runtime behavior does not cross-contaminate. Each copy adds ~4 temp registers and ~15 instructions per matched shader{(heavyStacking ? "; with 6+ active copies, shader compilation stalls or register pressure may occur." : ", which coexists safely at low counts.")}";
+                    recommendZh = heavyStacking
+                        ? "请勿直接删除角色目录内的 CutoutMask.ini（否则透明遮罩失效）；若遇到切图卡顿或材质异常，建议减少同时开启的同类型独立 CutoutMask Mod 数量，或优先选用基于 EFMITTL 共享插件的版本。"
+                        : "已通过唯一常量 ID 自保护隔离，当前数量下可正常兼容共存——请勿删除 CutoutMask.ini 或停用上述 Mod。";
+                    recommendEn = heavyStacking
+                        ? "Do NOT delete CutoutMask.ini inside active Mods (or alpha masks will break); if you experience shader compilation stutter, reduce the number of simultaneously enabled standalone CutoutMask Mods or prefer EFMITTL-based versions."
+                        : "Safely isolated via unique constant IDs — compatible in normal gameplay. Do NOT delete CutoutMask.ini or disable these Mods.";
+                }
+                else
+                {
+                    severity = hasReplace ? "HIGH" : "WARNING";
+                    titleZh = hasReplace
+                        ? $"正则匹配器重复 · 未隔离字节码注入 ([{sampleName}])"
+                        : $"正则匹配器重复 ([{sampleName}])";
+                    titleEn = hasReplace
+                        ? $"Duplicate Unguarded Regex ASM Injection ([{sampleName}])"
+                        : $"Duplicate ShaderRegex Pattern ([{sampleName}])";
+                    subtitleZh = $"涉及 Mod ({mods.Count}): {string.Join(" ↔ ", mods)}  |  含 Pattern.Replace: {(hasReplace ? "是 (未隔离/ID冲突)" : "否")}";
+                    subtitleEn = $"Mods ({mods.Count}): {string.Join(" ↔ ", mods)}  |  Has Pattern.Replace: {(hasReplace ? "Yes (Unguarded/Collision)" : "No")}";
+                    reasonZh = hasReplace
+                        ? $"多个 Mod 对相同的着色器结构执行了 [ShaderRegex.*.Pattern.Replace] 动态字节码替换，且未检测到互不冲突的唯一常量 if_nz 隔离保护（或存在相同 ID 撞号）。同时开启极易导致着色器指令互相覆写、贴图错乱甚至游戏崩溃！"
+                        : $"多个 Mod 内置了相同的未隔离 [ShaderRegex] 正则匹配模式，在加载着色器时会产生重复匹配开销，若共享命名空间则可能互相覆盖状态。";
+                    reasonEn = hasReplace
+                        ? $"Multiple Mods apply [ShaderRegex.*.Pattern.Replace] ASM patching to the same shader pattern without mutually distinct if_nz constant tag isolation (or have colliding IDs). Enabling them together risks instruction clobbering, broken materials, or crashes!"
+                        : $"Multiple Mods bundle identical unisolated [ShaderRegex] patterns, adding redundant matching overhead and risking state overwrite if namespaces are shared.";
+                    recommendZh = hasReplace
+                        ? "若游戏内出现材质发黑、透明失效或崩溃，请避免同时开启上述存在字节码冲突的 Mod，或将其迁移至 EFMITTL / [CustomShader] 方案。"
+                        : "请检查其中是否包含与根目录公共分类器完全一致的无 namespace 冗余拷贝；若文件顶部声明了私有 namespace 则请勿删除。";
+                    recommendEn = hasReplace
+                        ? "If material glitches or crashes occur, avoid enabling these conflicting bytecode-patching Mods simultaneously, or migrate them to EFMITTL / [CustomShader]."
+                        : "Check whether any file is a non-namespaced duplicate of a root shared classifier; do NOT delete files that declare their own private namespace.";
+                }
 
                 var ci = new ConflictItem
                 {
                     Id = $"C_Pat_{idCounter++}",
                     Category = "C",
                     Severity = severity,
-                    TitleZh = hasReplace
-                        ? $"正则匹配器重复 · 字节码注入 ([{sampleName}])"
-                        : $"正则匹配器重复 ([{sampleName}])",
-                    TitleEn = hasReplace
-                        ? $"Duplicate ShaderRegex ASM Injection ([{sampleName}])"
-                        : $"Duplicate ShaderRegex Pattern ([{sampleName}])",
-                    SubtitleZh = $"涉及 Mod ({mods.Count}): {string.Join(" ↔ ", mods)}  |  含 Pattern.Replace: {(hasReplace ? "是 (高危)" : "否")}",
-                    SubtitleEn = $"Mods ({mods.Count}): {string.Join(" ↔ ", mods)}  |  Has Pattern.Replace: {(hasReplace ? "Yes (High Risk)" : "No")}",
-                    ReasonZh = hasReplace
-                        ? $"多个 Mod 对相同的着色器结构使用了 [ShaderRegex.*.Pattern.Replace] 动态字节码注入（如独立 CutoutMask / 透明遮罩正则）。根据 AGMF社区规范，多个 Mod 同时对同一类 Shader 执行 Regex 字节码修补会导致自重匹配、多命名空间指令堆叠、严重掉帧甚至游戏崩溃！"
-                        : $"多个 Mod 各自内置了完全相同的 [ShaderRegex] 正则匹配模式（如 CrossIBClassifier.ini）。虽然各自写入私有命名空间变量，但多份相同正则在加载着色器时会产生重复匹配开销。",
-                    ReasonEn = hasReplace
-                        ? $"Multiple Mods apply [ShaderRegex.*.Pattern.Replace] ASM bytecode patching to the same shader pattern (e.g. standalone CutoutMask). Per AGMF community standard, multi-Mod ShaderRegex bytecode replacement causes self-rematching, multi-namespace instruction stacking, severe stutter, or crashes!"
-                        : $"Multiple Mods bundle identical [ShaderRegex] patterns (e.g. CrossIBClassifier.ini). Even with private namespaces, duplicate regex definitions add redundant shader compilation/matching overhead.",
-                    RecommendZh = hasReplace
-                        ? "强烈建议将 [ShaderRegex.*.Pattern.Replace] 迁移为按具体 Shader Hash 绑定的 [CustomShader] 或统一交由单个共享组件处理，避免多个角色 Mod 叠加注入。"
-                        : "如果已使用 EFMI Core 原生骨骼合并 (MergedSkeleton) 或统一分类器，可清理多余的重复 CrossIBClassifier.ini。",
-                    RecommendEn = hasReplace
-                        ? "Migrate [ShaderRegex.*.Pattern.Replace] to targeted [CustomShader] sections or consolidate into a single shared component."
-                        : "Consider consolidating duplicate CrossIBClassifier.ini files or migrating to EFMI Core MergedSkeleton.",
+                    TitleZh = titleZh,
+                    TitleEn = titleEn,
+                    SubtitleZh = subtitleZh,
+                    SubtitleEn = subtitleEn,
+                    ReasonZh = reasonZh,
+                    ReasonEn = reasonEn,
+                    RecommendZh = recommendZh,
+                    RecommendEn = recommendEn,
                     Sections = items
                 };
                 PopulateModMetadata(ci, items);
-                result.AllFindings.Add(ci);
+                categoryCItems.Add(ci);
             }
 
-            // C3: Multiple non-FX-Plugin Mods using [ShaderRegex.*.Pattern.Replace] on the same shader_model (AGMF community standard ASM stacking risk)
-            var replaceByModelGroups = allSR
-                .Where(x => x.HasPatternReplace && x.ModType != ModArchType.ShaderPatch)
-                .GroupBy(x => (x.ShaderModel ?? "unknown").ToLowerInvariant());
+            // C3: Cross-Mod [ShaderRegex.*.Pattern.Replace] targeting the same shader signature bucket
+            //     (excludes sections already reported in C2, and compares normalized CB/output constraints rather than bare shader_model)
+            var remainingReplaceItems = allSR
+                .Where(x => x.HasPatternReplace && x.ModType != ModArchType.ShaderPatch && !c2ReportedReplaceSections.Contains(x))
+                .ToList();
 
-            foreach (var g in replaceByModelGroups)
+            var replaceByTargetBucket = remainingReplaceItems
+                .GroupBy(x => ExtractShaderTargetSignature(x.ShaderModel, x.PatternText), StringComparer.OrdinalIgnoreCase);
+
+            foreach (var g in replaceByTargetBucket)
             {
                 var items = g.ToList();
                 var mods = items.Select(x => x.Mod).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
                 if (mods.Count < 2) continue;
 
-                // Skip if all items were already reported as identical pattern in C2
-                bool alreadyCovered = result.AllFindings.Any(f =>
-                    f.Category == "C" &&
-                    f.InvolvedMods.Count == mods.Count &&
-                    !f.InvolvedMods.Except(mods, StringComparer.OrdinalIgnoreCase).Any());
-                if (alreadyCovered) continue;
+                bool allTagIsolated = items.All(x => x.IsTagIsolatedReplace) &&
+                                      AreReplaceSectionsUniquelyTagIsolated(items);
+                bool heavyStacking = mods.Count >= 6;
+                string severity = (!allTagIsolated || heavyStacking) ? "HIGH" : "WARNING";
+
+                var tags = items
+                    .Where(x => !string.IsNullOrEmpty(x.IsolatedGuardTag))
+                    .Select(x => x.IsolatedGuardTag)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                string tagSummary = tags.Count > 0 ? string.Join(", ", tags.Take(5)) : "-";
 
                 var ci = new ConflictItem
                 {
                     Id = $"C_ReplaceStack_{idCounter++}",
                     Category = "C",
-                    Severity = "HIGH",
-                    TitleZh = $"正则匹配器重复 · 多重字节码注入叠加 ({g.Key})",
-                    TitleEn = $"Duplicate ShaderRegex.Pattern.Replace Bytecode Stacking ({g.Key})",
-                    SubtitleZh = $"涉及 Mod ({mods.Count}): {string.Join(" ↔ ", mods)}  |  共 {items.Count} 个字节码修补节",
-                    SubtitleEn = $"Involved Mods ({mods.Count}): {string.Join(" ↔ ", mods)}  |  {items.Count} bytecode replace sections",
-                    ReasonZh = $"检测到 {mods.Count} 个不同 Mod 同时对 {g.Key} 着色器使用了 [ShaderRegex.*.Pattern.Replace] 动态字节码替换（例如各自的 CutoutMask.ini 透明遮罩正则）。根据 AGMF社区规范，多个 Mod 同时对同类着色器进行 Regex 字节码注入会导致自重匹配、多命名空间指令堆叠、性能下降甚至崩溃。",
-                    ReasonEn = $"Detected {mods.Count} different Mods applying [ShaderRegex.*.Pattern.Replace] bytecode patching to {g.Key} shaders (e.g. standalone CutoutMask.ini). Per AGMF community standard, multi-Mod regex bytecode replacement causes self-rematching, multi-namespace ASM stacking, performance loss, or crashes.",
-                    RecommendZh = "建议避免同时开启多个自带独立 CutoutMask.ini (ShaderRegex.Pattern.Replace) 的角色 Mod，或将其改造为基于 [CustomShader] 的定向材质路由。",
-                    RecommendEn = "Avoid enabling multiple Mods with standalone CutoutMask.ini (ShaderRegex.Pattern.Replace) simultaneously, or convert them to targeted [CustomShader] sections.",
+                    Severity = severity,
+                    TitleZh = allTagIsolated
+                        ? $"正则字节码注入叠加 · 已做唯一 ID 隔离 ({g.Key})"
+                        : $"正则匹配器重复 · 多重字节码注入叠加 ({g.Key})",
+                    TitleEn = allTagIsolated
+                        ? $"Stacked Regex ASM Injection · Tag-Isolated ({g.Key})"
+                        : $"Duplicate ShaderRegex.Pattern.Replace Stacking ({g.Key})",
+                    SubtitleZh = allTagIsolated
+                        ? $"涉及 Mod ({mods.Count}): {string.Join(" ↔ ", mods)}  |  唯一隔离 ID: [{tagSummary}]"
+                        : $"涉及 Mod ({mods.Count}): {string.Join(" ↔ ", mods)}  |  共 {items.Count} 个未完全隔离字节码节",
+                    SubtitleEn = allTagIsolated
+                        ? $"Mods ({mods.Count}): {string.Join(" ↔ ", mods)}  |  Unique Guard IDs: [{tagSummary}]"
+                        : $"Involved Mods ({mods.Count}): {string.Join(" ↔ ", mods)}  |  {items.Count} unisolated replace sections",
+                    ReasonZh = allTagIsolated
+                        ? $"检测到 {mods.Count} 个不同 Mod 对同一着色器特征族（{g.Key}）注入了字节码，但各自均通过独立 namespace 与唯一常量 ID（{tagSummary}）包裹在 if_nz 内实现了运行时逻辑隔离。{(heavyStacking ? "当前叠加份数较多，可能引起首次加载编译卡顿。" : "当前开启份数较少，可正常兼容运行。")}"
+                        : $"检测到 {mods.Count} 个不同 Mod 同时对同一着色器特征族（{g.Key}）使用了未做唯一 ID 隔离保护的 [ShaderRegex.*.Pattern.Replace] 动态字节码替换，可能导致多命名空间指令冲突、渲染异常或崩溃。",
+                    ReasonEn = allTagIsolated
+                        ? $"Detected {mods.Count} Mods injecting ASM into the same shader target family ({g.Key}), each isolated via private namespace and unique if_nz constant ID ({tagSummary}). {(heavyStacking ? "High active count may cause compilation stalls." : "Coexists normally at low counts.")}"
+                        : $"Detected {mods.Count} Mods applying unisolated [ShaderRegex.*.Pattern.Replace] patching to the same shader family ({g.Key}), risking ASM instruction conflicts, visual glitches, or crashes.",
+                    RecommendZh = allTagIsolated
+                        ? (heavyStacking
+                            ? "请勿删除角色目录内的 CutoutMask.ini；若切图卡顿可减少同时开启的同类 Mod 数量。"
+                            : "已通过唯一常量 ID 隔离，常规游玩可正常共存，请勿删除内部功能文件或停用 Mod。")
+                        : "若出现材质异常或崩溃，建议避免同时开启上述存在未隔离字节码重叠的 Mod。",
+                    RecommendEn = allTagIsolated
+                        ? (heavyStacking
+                            ? "Do NOT delete CutoutMask.ini; reduce simultaneously active standalone CutoutMask Mods if stutter occurs."
+                            : "Isolated via unique constant IDs — safe in normal gameplay. Do NOT delete internal INI files or disable these Mods.")
+                        : "If visual glitches or crashes occur, avoid enabling these overlapping unguarded bytecode-patching Mods together.",
                     Sections = items
                 };
                 PopulateModMetadata(ci, items);
-                result.AllFindings.Add(ci);
+                categoryCItems.Add(ci);
             }
 
             // C4: KatFXMatcap + RabbitFX simultaneous active conflict detection
@@ -1716,6 +2171,11 @@ namespace EfmiConflictAuditor
                     Sections = combinedPreviewSections
                 };
                 PopulateModMetadata(ci, allInvolvedSections);
+                categoryCItems.Add(ci);
+            }
+
+            foreach (var ci in categoryCItems.OrderBy(x => SeverityRank(x.Severity)))
+            {
                 result.AllFindings.Add(ci);
             }
 
@@ -1725,15 +2185,37 @@ namespace EfmiConflictAuditor
             // =========================================================================
             if (!includeDisabled)
             {
-                var toGroups = allTO
-                    .Where(x => !string.IsNullOrEmpty(x.Hash) && !x.PureClassifier)
-                    .GroupBy(x => x.Hash, StringComparer.OrdinalIgnoreCase);
+                var realTO = allTO.Where(x => !string.IsNullOrEmpty(x.Hash) && !x.PureClassifier).ToList();
+                var modHashSets = realTO
+                    .GroupBy(x => x.Mod, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(
+                        g => g.Key,
+                        g => new HashSet<string>(g.Select(x => x.Hash), StringComparer.OrdinalIgnoreCase),
+                        StringComparer.OrdinalIgnoreCase);
+
+                var dualFormBuckets = new Dictionary<string, (string modA, string modB, List<string> hashes, List<IniSectionItem> sections)>(StringComparer.OrdinalIgnoreCase);
+
+                var toGroups = realTO.GroupBy(x => x.Hash, StringComparer.OrdinalIgnoreCase);
 
                 foreach (var g in toGroups)
                 {
                     var items = g.ToList();
-                    var mods = items.Select(x => x.Mod).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                    var mods = items.Select(x => x.Mod).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(m => m, StringComparer.OrdinalIgnoreCase).ToList();
                     if (mods.Count < 2) continue;
+
+                    // Detect complementary Normal + Ultimate/Transformation dual-form companion pair
+                    if (mods.Count == 2 && IsDualFormCompanionPair(mods[0], mods[1], modHashSets))
+                    {
+                        string pairKey = $"{mods[0]}||{mods[1]}";
+                        if (!dualFormBuckets.TryGetValue(pairKey, out var bucket))
+                        {
+                            bucket = (mods[0], mods[1], new List<string>(), new List<IniSectionItem>());
+                            dualFormBuckets[pairKey] = bucket;
+                        }
+                        bucket.hashes.Add(g.Key);
+                        bucket.sections.AddRange(items);
+                        continue;
+                    }
 
                     var ci = new ConflictItem
                     {
@@ -1744,18 +2226,106 @@ namespace EfmiConflictAuditor
                         TitleEn = $"Same-Character Multi-Mod Overlap: {g.Key}",
                         SubtitleZh = $"涉及 Mod ({mods.Count}): {string.Join(" ↔ ", mods)}",
                         SubtitleEn = $"Mods ({mods.Count}): {string.Join(" ↔ ", mods)}",
-                        ReasonZh = $"多个已启用的 Mod 同时覆写了相同的角色模型缓冲区 (IB/VB) 或贴图 Hash ({g.Key})。如果这两个 Mod 属于同一个角色的不同皮肤，同时开启会导致模型破损或互相重叠。",
-                        ReasonEn = $"Multiple active Mods override the same character IB/VB/Texture resource hash ({g.Key}). Enabling multiple skins for the same character simultaneously causes mesh overlap or glitches.",
-                        RecommendZh = "请检查是否为同一角色同时开启了多个皮肤 Mod（若是，请将其中一个文件夹加上 DISABLED_ 前缀禁用）。",
-                        RecommendEn = "Verify whether you accidentally left multiple skins for the same character enabled at the same time.",
+                        ReasonZh = $"多个已启用的 Mod 同时覆写了相同的模型缓冲区 (IB/VB) 或贴图 Hash ({g.Key})。若这些 Mod 属于同一个角色的不同皮肤，同时开启会导致模型破损或互相重叠。",
+                        ReasonEn = $"Multiple active Mods override the same IB/VB/Texture resource hash ({g.Key}). If these Mods are different skins for the same character, enabling them simultaneously causes mesh overlap or glitches.",
+                        RecommendZh = "请人工确认涉及的 Mod 是否为同一角色的不同皮肤：若是重复开启的多余皮肤，请为其中一个文件夹加上 DISABLED_ 前缀禁用；若属于不同角色，或属于同一角色的「常态 + 大招 / 独立配件」配套拆分包，则无需处理。",
+                        RecommendEn = "Verify whether these Mods are duplicate skins for the same character (if so, disable one with the DISABLED_ prefix); if they belong to different characters or are complementary normal/ultimate/accessory sub-packages, no action is needed.",
                         Sections = items
                     };
                     PopulateModMetadata(ci, items);
                     result.AllFindings.Add(ci);
                 }
+
+                foreach (var kv in dualFormBuckets.Values)
+                {
+                    string hashPreview = kv.hashes.Count <= 5
+                        ? string.Join(", ", kv.hashes)
+                        : $"{string.Join(", ", kv.hashes.Take(5))} ... (+{kv.hashes.Count - 5})";
+
+                    var ci = new ConflictItem
+                    {
+                        Id = $"D_DualForm_{idCounter++}",
+                        Category = "D",
+                        Severity = "INFO",
+                        TitleZh = $"同角色双形态配套提示 (共享 {kv.hashes.Count} 个局部 Hash)",
+                        TitleEn = $"Dual-Form Companion Mods Notice ({kv.hashes.Count} shared sub-hashes)",
+                        SubtitleZh = $"常态与变身配套: {kv.modA} ↔ {kv.modB}  |  共享局部 Hash: {hashPreview}",
+                        SubtitleEn = $"Companion Pair: {kv.modA} ↔ {kv.modB}  |  Shared sub-hashes: {hashPreview}",
+                        ReasonZh = $"检测到同一角色的「常态形态」与「大招/变身形态」配套 Mod 同时启用。两者拥有各自独立的主体服饰网格 Hash，仅在面部/五官等 {kv.hashes.Count} 个通用局部组件（{hashPreview}）上存在正常交集。",
+                        ReasonEn = $"Detected complementary Normal-form and Ultimate/Transformation-form Mods enabled together. Each targets its own distinct primary outfit meshes and only shares {kv.hashes.Count} common sub-component hash(es) ({hashPreview}, such as face/eyelashes).",
+                        RecommendZh = "此为正常的「常态 + 大招变身」双形态拆分设计，游玩时需同时保持启用——请勿禁用其中任何一个文件夹，否则对应形态将退回原版模型。",
+                        RecommendEn = "This is an intentional Normal + Ultimate dual-form split setup and both folders should remain enabled — do NOT disable either one, or that form will revert to the vanilla model.",
+                        Sections = kv.sections
+                    };
+                    PopulateModMetadata(ci, kv.sections);
+                    result.AllFindings.Add(ci);
+                }
             }
 
             return result;
+        }
+
+        private static int SeverityRank(string severity)
+        {
+            return (severity?.ToUpperInvariant()) switch
+            {
+                "CRITICAL" => 0,
+                "HIGH" => 1,
+                "WARNING" => 2,
+                "MEDIUM" => 2,
+                "INFO" => 3,
+                _ => 4
+            };
+        }
+
+        private static bool AreNamespacesDistinctAcrossMods(IEnumerable<IniSectionItem> items)
+        {
+            var list = items.ToList();
+            if (list.Any(x => string.IsNullOrWhiteSpace(x.Namespace)))
+                return false;
+
+            return list
+                .GroupBy(x => x.Namespace.Trim(), StringComparer.OrdinalIgnoreCase)
+                .All(g => g.Select(x => x.File).Distinct(StringComparer.OrdinalIgnoreCase).Count() == 1);
+        }
+
+        private static bool AreReplaceSectionsUniquelyTagIsolated(IEnumerable<IniSectionItem> replaceItems)
+        {
+            var list = replaceItems.ToList();
+            if (list.Count == 0)
+                return false;
+
+            if (list.Any(x => !x.IsTagIsolatedReplace || string.IsNullOrWhiteSpace(x.IsolatedGuardTag) || string.IsNullOrWhiteSpace(x.Namespace)))
+                return false;
+
+            bool distinctTagsAcrossFiles = list
+                .GroupBy(x => x.IsolatedGuardTag.Trim(), StringComparer.OrdinalIgnoreCase)
+                .All(g => g.Select(x => x.File).Distinct(StringComparer.OrdinalIgnoreCase).Count() == 1);
+
+            if (!distinctTagsAcrossFiles)
+                return false;
+
+            return AreNamespacesDistinctAcrossMods(list);
+        }
+
+        private static bool IsDualFormCompanionPair(
+            string modA,
+            string modB,
+            Dictionary<string, HashSet<string>> modHashSets)
+        {
+            bool aUlt = IsDualFormModName(modA);
+            bool bUlt = IsDualFormModName(modB);
+            if (aUlt == bUlt)
+                return false;
+
+            if (!modHashSets.TryGetValue(modA, out var setA) || !modHashSets.TryGetValue(modB, out var setB))
+                return false;
+
+            int uniqueA = setA.Count(h => !setB.Contains(h));
+            int uniqueB = setB.Count(h => !setA.Contains(h));
+
+            // Both forms must have distinct primary outfit/body component hashes (>= 2 unique hashes each)
+            return uniqueA >= 2 && uniqueB >= 2;
         }
 
         private static string NormalizePatternForComparison(string pattern)
@@ -1772,8 +2342,8 @@ namespace EfmiConflictAuditor
 
             sb.AppendLine("================================================================================");
             sb.AppendLine(zh
-                ? " EFMI MOD 冲突检测工具 v1.0.2 - 检测报告"
-                : " EFMI Mods Conflict Auditor v1.0.2 - Audit Report");
+                ? " EFMI MOD 冲突检测工具 v1.0.3 - 检测报告"
+                : " EFMI Mods Conflict Auditor v1.0.3 - Audit Report");
             sb.AppendLine("================================================================================");
             sb.AppendLine(zh ? $"扫描时间: {audit.ScanTime:yyyy-MM-dd HH:mm:ss}" : $"Scan Time: {audit.ScanTime:yyyy-MM-dd HH:mm:ss}");
             sb.AppendLine(zh ? $"目标路径: {audit.TargetPath}" : $"Target: {audit.TargetPath}");
@@ -1854,7 +2424,9 @@ namespace EfmiConflictAuditor
                         {
                             string disTag = s.ModIsDisabled ? "[DISABLED] " : "";
                             string filterStr = s.Filter.HasValue ? s.Filter.Value.ToString(CultureInfo.InvariantCulture) : "-";
-                            sb.AppendLine($"    - {disTag}{s.Mod} :: {s.RelativeFile} (Line {s.Line}) :: [{s.Name}] hash={s.Hash ?? "-"} filter={filterStr} overrule={s.Overrule}");
+                            string nsStr = !string.IsNullOrEmpty(s.Namespace) ? $" ns={s.Namespace}" : "";
+                            string tagStr = s.IsTagIsolatedReplace && !string.IsNullOrEmpty(s.IsolatedGuardTag) ? $" guard_id={s.IsolatedGuardTag}" : "";
+                            sb.AppendLine($"    - {disTag}{s.Mod} :: {s.RelativeFile} (Line {s.Line}) :: [{s.Name}]{nsStr} hash={s.Hash ?? "-"} filter={filterStr}{tagStr} overrule={s.Overrule}");
                         }
                     }
                 }

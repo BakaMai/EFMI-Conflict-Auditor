@@ -1949,12 +1949,23 @@ namespace EfmiConflictAuditor
             {
                 var sec = item.Sections[i];
                 string disMark = sec.ModIsDisabled ? $"[{I18n.DisabledBadge}] " : "";
-                sbCode.AppendLine($"; --- {disMark}{sec.Mod} :: {sec.RelativeFile} (Line {sec.Line}) ---");
+                string nsMark = !string.IsNullOrEmpty(sec.Namespace) ? $"  [namespace = {sec.Namespace}]" : "";
+                sbCode.AppendLine($"; --- {disMark}{sec.Mod} :: {sec.RelativeFile} (Line {sec.Line}){nsMark} ---");
                 sbCode.AppendLine(sec.Text.Trim());
                 if (!string.IsNullOrEmpty(sec.PatternText))
                 {
                     sbCode.AppendLine($"[{sec.Name}.Pattern]");
                     sbCode.AppendLine(sec.PatternText.Trim());
+                }
+                if (!string.IsNullOrEmpty(sec.InsertDeclText))
+                {
+                    sbCode.AppendLine($"[{sec.Name}.InsertDeclarations]");
+                    sbCode.AppendLine(sec.InsertDeclText.Trim());
+                }
+                if (!string.IsNullOrEmpty(sec.ReplaceText))
+                {
+                    sbCode.AppendLine($"[{sec.Name}.Pattern.Replace]");
+                    sbCode.AppendLine(sec.ReplaceText.Trim());
                 }
                 sbCode.AppendLine();
             }
